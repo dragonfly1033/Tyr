@@ -1,0 +1,16 @@
+[package]
+authors = ["Shrey Patel"]
+description = "A transpiler for the Tyr policy description language."
+license = "GPLv3"
+name = "tyrc"
+readme = "README.md"
+version = "0.0.1"
+edition = "2024"
+build = "build.rs"
+
+[build-dependencies]
+lalrpop = "0.22.2"
+
+[dependencies]
+lalrpop-util = { version = "0.21.0", features = ["lexer", "unicode"]  }
+regex = "1.12.2"

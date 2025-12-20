@@ -1,0 +1,195 @@
+use std::str::FromStr;
+use lalrpop_util::ParseError;
+use crate::ast::*;
+
+grammar; 
+
+pub TitleId: TitleId = {
+    <i:r"[A-Z][a-zA-Z0-9_]*"> => TitleId(i.to_owned()),
+};
+
+pub Id: Id = {
+    <i:r"[a-z][a-zA-Z0-9_]*"> =>? {
+        if is_keyword(i) {
+            return Err(ParseError::User { error: "Id is a keyword" });
+        }
+        Ok(Id(i.to_owned()))
+    }
+};
+
+pub IdList: IdList = {
+    <f:Id> <mut v:("," <Id>)*> ","? => {
+        v.insert(0, f);
+        IdList(v)
+    }
+};
+
+pub Tag: Tag = {
+    "tag" <i:Id> => Tag(i),
+};
+pub TagG: TagG = {
+    "taggroup" <i:Id> "=" <l:IdList> => TagG(i, l),
+};
+
+pub Type: Type = {
+    <t:TitleId> => Type::Struct(t),
+    "str" => Type::String,
+    "int" => Type::Int,
+    "bool" => Type::Bool,
+};
+pub TypeList: TypeList = {
+    <f:Type> <mut v:("," <Type>)*> ","? => {
+        v.insert(0, f);
+        TypeList(v)
+    }
+};
+
+pub Field: Field = {
+    "field" <i:Id> ":" <t:Type> => Field(i, t),
+};
+pub FieldList: FieldList = {
+    <f:Field> <mut v:("," <Field>)*> ","? => {
+        v.insert(0, f);
+        FieldList(v)
+    }
+};
+
+pub Struct: Struct = {
+    "struct" <n:TitleId> "[" <t:IdList?> "]" "{" <f:FieldList?> "}" => {
+        Struct(n, t, f)
+    }
+}
+
+
+pub Action: Action = {
+    "action" <i:Id> "(" <t:TypeList?> ")" => Action(i, t),
+};
+pub ActionG: ActionG = {
+    "actiongroup" <i:Id> "=" <l:IdList> => ActionG(i, l),
+};
+
+pub Arg: Arg = {
+    <t:Type> <i:Id> => Arg(t, i),
+};
+pub ArgList: ArgList = {
+    <f:Arg> <mut v:("," <Arg>)*> ","? => {
+        v.insert(0, f);
+        ArgList(v)
+    }
+};
+
+pub Fallback: Fallback = {
+    "allow" => Fallback::Allow,
+    "deny" => Fallback::Deny,
+    "warn" => Fallback::Warn,
+};
+
+pub Rule: Rule = {
+    "allow" <c:Condition> ";" => Rule::Allow(c),
+    "deny" <c:Condition> ";" => Rule::Deny(c),
+    "apply" "[" <l:IdList> "]" <c:Condition> ";" => Rule::Apply(l, c),
+};
+Rules: Rules = {
+    <v:Rule*> => Rules(v),
+};
+pub RuleBlock: RuleBlock = {
+    "rules" <i:Id> "(" <a:ArgList?> ")" "fallback" <f:Fallback> "{" <r:Rules> "}" => {
+        RuleBlock(i, a, f, r)
+    },
+};
+
+
+pub Condition: Condition = {
+    "when" <b:BoolExpr> => Condition::When(b),
+    "always" => Condition::Always,
+    "never" => Condition::Never,
+};
+
+pub BoolExpr: Box<BoolExpr> = {
+    <a:BoolExpr> "or" <b:BoolProd> => Box::new(BoolExpr::Or(a, b)),
+    <a:BoolProd> => a,
+};
+pub BoolProd: Box<BoolExpr> = {
+    <a:BoolProd> "and" <b:BoolNot> => Box::new(BoolExpr::And(a, b)),
+    <a:BoolNot> => a,
+};
+pub BoolNot: Box<BoolExpr> = {
+    "not" <a:BoolNot> => Box::new(BoolExpr::Not(a)),
+    <a:BoolTerm> => a,
+};
+pub BoolTerm: Box<BoolExpr> = {
+    "(" <a:BoolExpr> ")" => a,
+    <i:Id> "(" <l:IdList?> ")" "allowed" => Box::new(BoolExpr::Rule(i, l)),
+
+    <a:Expr> ">" <b:Expr> => Box::new(BoolExpr::Gt(a, b)),
+    <a:Expr> "<" <b:Expr> => Box::new(BoolExpr::Lt(a, b)),
+    <a:Expr> ">=" <b:Expr> => Box::new(BoolExpr::Gte(a, b)),
+    <a:Expr> "<=" <b:Expr> => Box::new(BoolExpr::Lte(a, b)),
+    
+    <a:Expr> "==" <b:Expr> => Box::new(BoolExpr::Eq(a, b)),
+    <a:Expr> "!=" <b:Expr> => Box::new(BoolExpr::Neq(a, b)),
+
+    <a:Expr> "matches" <b:Expr> => Box::new(BoolExpr::Match(a, b)),
+
+    <t:Expr> "contains" <l:Id> => Box::new(BoolExpr::Contains(t, l)),
+    <t:Expr> "contains_all" <l:IdList> => Box::new(BoolExpr::ContainsAll(t, l)),
+    <t:Expr> "contains_any" <l:IdList> => Box::new(BoolExpr::ContainsAny(t, l)),
+    <t:Expr> "lacks" <l:Id> => Box::new(BoolExpr::Lacks(t, l)),
+    <t:Expr> "lacks_all" <l:IdList> => Box::new(BoolExpr::LacksAll(t, l)),
+    <t:Expr> "lacks_any" <l:IdList> => Box::new(BoolExpr::LacksAny(t, l)),
+
+    "true" => Box::new(BoolExpr::True),
+    "false" => Box::new(BoolExpr::False),
+};
+
+pub FieldValue: FieldValue = {
+    <h:Id> <mut t:("." <Id>)*> => {
+        t.insert(0, h);
+        FieldValue(t)
+    },
+};
+
+pub Expr: Box<Expr> = {
+    <a:Expr> "+" <b:Prod> => Box::new(Expr::Add(a, b)),
+    <a:Expr> "-" <b:Prod> => Box::new(Expr::Sub(a, b)),
+    <a:Prod> => a,
+};
+Prod: Box<Expr> = {
+    <a:Prod> "*" <b:Neg> => Box::new(Expr::Mul(a, b)),
+    <a:Prod> "/" <b:Neg> => Box::new(Expr::Div(a, b)),
+    <a:Neg> => a,
+};
+Neg: Box<Expr> = {
+    "-" <a:Neg> => Box::new(Expr::Neg(a)),
+    <a:Term> => a,
+};
+pub Term: Box<Expr> = {
+    "(" <e:Expr> ")" => e,
+    <f:FieldValue> => Box::new(Expr::Field(f)),
+    <n:r"[0-9]+"> => Box::new(Expr::Num(i32::from_str(n).unwrap())),
+    <l:r#""[^"`]*""#> => {
+        let inner = &l[1..l.len()-1];
+        Box::new(Expr::String(inner.to_string()))
+    },
+    <r:r#"`[^"`]*`"#> =>? {
+        let inner = &r[1..r.len()-1];
+        Ok(Box::new(Expr::Regex(RealRegex::new(inner).map_err(|e| {
+            ParseError::User { error: "Invalid Regex." }
+        })?)))
+    },
+    "any_arg" => Box::new(Expr::AnyArg),
+    "every_arg" => Box::new(Expr::EveryArg),
+};
+
+
+pub CodeItem: CodeItem = {
+    <t:Tag> ";" => CodeItem::Tag(t),
+    <t:TagG> ";" => CodeItem::TagG(t),
+    <t:Struct> ";" => CodeItem::Struct(t),
+    <t:Action> ";" => CodeItem::Action(t),
+    <t:ActionG> ";" => CodeItem::ActionG(t),
+    <t:RuleBlock> ";" => CodeItem::RuleBlock(t),
+};
+pub Code: Code = {
+    <c:CodeItem*> => Code(c), 
+}
