@@ -1,3 +1,5 @@
+use crate::CompilerError;
+
 pub fn is_keyword(word: &str) -> bool {
     matches!(word, 
         "tag" | "taggroup" | "struct" | "field" | 
@@ -34,7 +36,7 @@ impl PartialEq for RealRegex {
 pub struct Id(pub String);
 #[allow(unused)]#[derive(Debug,PartialEq)]
 pub struct IdList(pub Vec<Id>);
-#[allow(unused)]#[derive(Debug,PartialEq)]
+#[allow(unused)]#[derive(Debug,PartialEq,Hash,Eq,Clone)]
 pub struct TitleId(pub String);
 #[allow(unused)]#[derive(Debug,PartialEq)]
 pub struct Tag(pub Id);
@@ -42,7 +44,7 @@ pub struct Tag(pub Id);
 pub struct TagG(pub Id, pub IdList);
 
 
-#[allow(unused)]#[derive(Debug,PartialEq)]
+#[allow(unused)]#[derive(Debug,PartialEq,Hash,Eq,Clone)]
 pub enum Type {
     Struct(TitleId),
     String,
@@ -111,7 +113,7 @@ pub enum BoolExpr {
     Or(Box<BoolExpr>, Box<BoolExpr>),
     Not(Box<BoolExpr>),
     
-    Rule(Id, Option<IdList>),
+    Rule(Id, Option<ExprList>),
 
     Gt(Box<Expr>, Box<Expr>),
     Lt(Box<Expr>, Box<Expr>),
@@ -153,15 +155,41 @@ pub enum Expr {
     AnyArg,
     EveryArg,
 }
+#[allow(unused)]#[derive(Debug,PartialEq)]
+pub struct ExprList(pub Vec<Expr>);
 
 #[allow(unused)]#[derive(Debug,PartialEq)]
 pub enum ExprType {
     Int,
     Bool,
-    Struct,
+    Struct(String),
     String,
     Regex,
     TagList,
+}
+impl TryFrom<ExprType> for Type {
+    type Error = CompilerError;
+
+    fn try_from(value: ExprType) -> Result<Self, Self::Error> {
+        match value {
+            ExprType::Bool => Ok(Type::Bool),
+            ExprType::String => Ok(Type::String),
+            ExprType::Int => Ok(Type::Int),
+            ExprType::Struct(s) => Ok(Type::Struct(TitleId(s))),
+            ExprType::Regex => Err(CompilerError::TypeError(format!("Regex expressions cannot be passed as values."))),
+            ExprType::TagList => Err(CompilerError::TypeError(format!("TagList expressions cannot be passed as values."))),
+        }
+    }
+}
+impl From<Type> for ExprType {
+    fn from(value: Type) -> Self {
+        match value {
+            Type::Bool => ExprType::Bool,
+            Type::String => ExprType::String,
+            Type::Int => ExprType::Int,
+            Type::Struct(TitleId(s)) => ExprType::Struct(s),
+        }
+    }
 }
 
 
@@ -757,7 +785,7 @@ mod test {
     #[test]
     fn test_bool_expr_parser() {
         let parser = grammar::BoolExprParser::new();
-        let id_list_parser = grammar::IdListParser::new();
+        let expr_list_parser = grammar::ExprListParser::new();
 
         let test_valid_word = |word: &str, expected: BoolExpr| {
             let res = parser.parse(word);
@@ -811,7 +839,7 @@ mod test {
         test_valid_word("this(that, other) allowed", 
             BoolExpr::Rule(
                 Id(String::from("this")),
-                Some(id_list_parser.parse("that,other").expect("Failed to parse IdList in test."))
+                Some(expr_list_parser.parse("that,other").expect("Failed to parse IdList in test."))
             ));
         test_valid_word("this() allowed", 
             BoolExpr::Rule(

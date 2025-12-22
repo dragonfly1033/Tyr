@@ -1,87 +1,5 @@
-use crate::{CompilerError, ast::{Action, ActionG, Arg, ArgList, BoolExpr, CodeItem, CodeItemType, Condition, Expr, ExprType, Field, FieldList, FieldValue, Id, IdList, Rule, RuleBlock, Rules, Struct, Tag, TagG, TitleId, Type, TypeList}};
-use std::{collections::{HashMap, HashSet}, hash::Hash};
-
-
-fn check_cycles<K>(graph: &HashMap<K, HashSet<K>>) -> Option<Vec<K>> 
-where 
-    K: Clone + Eq + Hash,
-{
-
-    let names:Vec<K> = graph.keys().into_iter().map(|s| s.clone()).collect();
-        
-    let mut visited: HashSet<K> = HashSet::new();
-    
-    for name in names {
-        let mut stack: Vec<(K, Option<K>)> = Vec::new();
-        let mut path: HashSet<K> = HashSet::new();
-        let mut parent_map: HashMap<K, K> = HashMap::new();
-
-        stack.push((name.clone(), None));
-
-        while let Some((current, parent)) = stack.pop() {
-            if path.contains(&current) {
-                let mut cycle = vec![current.clone()];
-                let Some(mut cur) = parent else {
-                    return Some(vec![current]);
-                };
-                while cur != current {
-                    cycle.push(cur.clone());
-                    cur = parent_map.get(&cur).expect("Parent should be Some during backtracking cycle.").clone();
-                }
-                cycle.push(current);
-                cycle.reverse();
-                return Some(cycle);
-            }
-
-            if visited.contains(&current) {
-                continue;
-            }
-
-            visited.insert(current.clone());
-            path.insert(current.clone());
-            if let Some(par) = parent {
-                parent_map.insert(current.clone(), par);
-            }
-
-            if let Some(nodes) = graph.get(&current) {
-                for node in nodes {
-                    stack.push((node.clone(), Some(current.clone())));
-                }
-            }
-        }
-    } 
-
-    None
-}
-
-fn flatten_graph<K>(graph: &HashMap<K, HashSet<K>>) -> HashMap<K, HashSet<K>>
-where 
-    K: Clone + Eq + Hash,
-{
-    let mut flat: HashMap<K, HashSet<K>> = HashMap::new();
-
-    for node in graph.keys() {
-        let mut stack: Vec<K> = Vec::new();
-        let mut this_flat: HashSet<K> = HashSet::new();
-
-        stack.push(node.clone());
-
-        while let Some(current) = stack.pop() {
-            if let Some(nebs) = graph.get(&current) {
-                for neb in nebs {
-                    if graph.contains_key(neb) {
-                        stack.push(neb.clone());
-                    } else {
-                        this_flat.insert(neb.clone());
-                    }
-                }
-            }
-        }
-        flat.insert(node.clone(), this_flat);
-    } 
-
-    flat
-}
+use crate::{CompilerError, ast::{Action, ActionG, Arg, ArgList, BoolExpr, CodeItem, CodeItemType, Condition, Expr, ExprList, ExprType, Field, FieldList, FieldValue, Id, IdList, Rule, RuleBlock, Rules, Struct, Tag, TagG, TitleId, Type, TypeList}};
+use std::{collections::{HashMap, HashSet}, ops::{Deref, DerefMut}};
 
 
 #[derive(Debug,Default)]
@@ -93,6 +11,20 @@ pub(crate) struct Identifiers {
     action_group_names: HashSet<String>,
     rule_block_names: HashSet<String>,
 } 
+impl Identifiers {
+    fn tag_exists(&self, tag: &String) -> bool {
+        self.tag_names.contains(tag) || self.tag_group_names.contains(tag)
+    }
+    fn struct_exists(&self, s: &String) -> bool {
+        self.struct_names.contains(s)
+    }
+    fn action_exists(&self, action: &String) -> bool {
+        self.action_names.contains(action) || self.action_group_names.contains(action)
+    }
+    fn rule_exists(&self, rule: &String) -> bool {
+        self.rule_block_names.contains(rule)
+    }
+}
 
 #[derive(Debug,Default)]
 pub(crate) struct CollectedCode<'a> {
@@ -119,115 +51,247 @@ pub(crate) fn collect_code(lines: &Vec<CodeItem>) -> Result<(CollectedCode, Iden
         match item {
             CodeItem::Tag(t) => {
                 let Tag(Id(name)) = t;
-                if !ids.tag_names.insert(name.clone()) {
-                    return Err(CompilerError::AlreadyDefined(format!("Tag {name} defined multiple times.")));
-                }
                 if let Some(cat) = cat_map.get(name) {
-                    return Err(CompilerError::AlreadyDefined(format!("Tag {name} defined as {cat:?} elsewhere.")));
+                    return Err(CompilerError::AlreadyDefined(format!("Tag {name} already defined as {cat:?} elsewhere.")));
                 }
                 cat_map.insert(name.clone(), CodeItemType::Tag);
                 coll.tags.push(t);
+                ids.tag_names.insert(name.clone());
             }
             CodeItem::TagG(t) => {
                 let TagG(Id(name), _) = t;
-                if !ids.tag_group_names.insert(name.clone()) {
-                    return Err(CompilerError::AlreadyDefined(format!("TagG {name} defined multiple times.")));
-                }
                 if let Some(cat) = cat_map.get(name) {
-                    return Err(CompilerError::AlreadyDefined(format!("TagG {name} defined as {cat:?} elsewhere.")));
+                    return Err(CompilerError::AlreadyDefined(format!("TagG {name} already defined as {cat:?} elsewhere.")));
                 }
                 cat_map.insert(name.clone(), CodeItemType::TagG);
                 coll.tag_groups.push(t);
+                ids.tag_group_names.insert(name.clone());
             }
             CodeItem::Struct(s) => {
                 let Struct(TitleId(name), ..) = s;
-                if !ids.struct_names.insert(name.clone()) {
-                    return Err(CompilerError::AlreadyDefined(format!("Struct {name} defined multiple times.")));
-                }
                 if let Some(cat) = cat_map.get(name) {
-                    return Err(CompilerError::AlreadyDefined(format!("Struct {name} defined as {cat:?} elsewhere.")));
+                    return Err(CompilerError::AlreadyDefined(format!("Struct {name} already defined as {cat:?} elsewhere.")));
                 }
                 cat_map.insert(name.clone(), CodeItemType::Struct);
                 coll.structs.push(s);
+                ids.struct_names.insert(name.clone());
             }
             CodeItem::Action(a) => {
                 let Action(Id(name), _) = a;
-                if !ids.action_names.insert(name.clone()) {
-                    return Err(CompilerError::AlreadyDefined(format!("Action {name} defined multiple times.")));
-                }
-                if let Some(cat) = cat_map.get(name) {
-                    if *cat == CodeItemType::RuleBlock {
-                        cat_map.insert(name.clone(), CodeItemType::Action);
-                    } else {
-                        return Err(CompilerError::AlreadyDefined(format!("Action {name} defined as {cat:?} elsewhere.")));
-                    }
+                if let Some(cat) = cat_map.get(name) { // safe because rule_blocks aren't added here.
+                    return Err(CompilerError::AlreadyDefined(format!("Action {name} already defined as {cat:?} elsewhere.")));
                 }
                 cat_map.insert(name.clone(), CodeItemType::Action);
                 coll.actions.push(a);
+                ids.action_names.insert(name.clone());
             }
             CodeItem::ActionG(a) => {
                 let ActionG(Id(name), _) = a;
-                if !ids.action_group_names.insert(name.clone()) {
-                    return Err(CompilerError::AlreadyDefined(format!("ActionG {name} defined multiple times.")));
-                }
-                if let Some(cat) = cat_map.get(name) {
-                    if *cat == CodeItemType::RuleBlock {
-                        cat_map.insert(name.clone(), CodeItemType::ActionG);
-                    } else {
-                        return Err(CompilerError::AlreadyDefined(format!("ActionG {name} defined as {cat:?} elsewhere.")));
-                    }
+                if let Some(cat) = cat_map.get(name) { // safe because rule_blocks aren't added here.
+                    return Err(CompilerError::AlreadyDefined(format!("ActionG {name} already defined as {cat:?} elsewhere.")));
                 }
                 cat_map.insert(name.clone(), CodeItemType::ActionG);
                 coll.action_groups.push(a);
+                ids.action_group_names.insert(name.clone());
             }
             CodeItem::RuleBlock(r) => {
                 let RuleBlock(Id(name), ..) = r;
+                if let Some(cat) = cat_map.get(name) && *cat != CodeItemType::Action && *cat != CodeItemType::ActionG { 
+                    return Err(CompilerError::TypeError(format!("RuleBlock {name} defined as {cat:?} not Action or ActionGroup.")));
+                }
                 if !ids.rule_block_names.insert(name.clone()) {
                     return Err(CompilerError::AlreadyDefined(format!("RuleBlock {name} defined multiple times.")));
                 }
-                // Rule blocks are supposed to have names of actions.
-                if let Some(cat) = cat_map.get(name) {
-                    if *cat != CodeItemType::Action && *cat != CodeItemType::ActionG { 
-                        return Err(CompilerError::AlreadyDefined(format!("RuleBlock {name} defined as {cat:?} not Action or ActionGroup.")));
-                    }
-                } else {
-                    cat_map.insert(name.clone(), CodeItemType::RuleBlock);
-                    coll.rule_blocks.push(r);
-                }
+                coll.rule_blocks.push(r);
+                ids.rule_block_names.insert(name.clone());
             }
+        }
+    }
+
+    // rule block names are actions/action_groups
+    // v12.
+    for name in &ids.rule_block_names {
+        if !ids.action_exists(name) {
+            return Err(CompilerError::Undefined(format!("RuleBlock {name} is not a defined Action or ActionGroup.")));
         }
     }
 
     Ok((coll, ids))
 }
 
-pub(crate) struct CompilerContext {
-    tag_mappings: HashMap<String, HashSet<String>>, // name -> members
-    types: HashSet<String>,
-    action_groups: HashMap<String, (Vec<String>, HashSet<String>)>, // name -> (arg types, members)
-    field_types: HashMap<(String, String), String>, // (struct, field) -> type
-    ids: Identifiers,
+struct NameMap(HashMap<String, HashSet<String>>);
+impl Deref for NameMap {
+    type Target = HashMap<String, HashSet<String>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl DerefMut for NameMap {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+impl<'a> IntoIterator for &'a NameMap {
+    type IntoIter = <&'a HashMap<String, HashSet<String>> as IntoIterator>::IntoIter;
+    type Item = (&'a String, &'a HashSet<String>);
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+impl NameMap {
+    fn new() -> Self {
+        NameMap(HashMap::new())
+    }
+
+    fn group_only(&self, is_group: impl Fn(&String) -> bool) -> Self {
+        let mut group_only: Self = NameMap::new();
+        for (group, members) in &self.0 {
+            group_only.insert(group.clone(), HashSet::new());
+            for m in members {
+                if is_group(m) {
+                    group_only.get_mut(group).map(|e| e.insert(m.clone()));
+                }
+            }
+        }
+        group_only
+    }
+
+    fn check_cycles(&self) -> Option<Vec<String>> {
+
+        let names:Vec<String> = self.keys().into_iter().map(|s| s.clone()).collect();
+            
+        let mut visited: HashSet<String> = HashSet::new();
+        
+        for name in names {
+            let mut stack: Vec<(String, Option<String>)> = Vec::new();
+            let mut path: HashSet<String> = HashSet::new();
+            let mut parent_map: HashMap<String, String> = HashMap::new();
+    
+            stack.push((name.clone(), None));
+    
+            while let Some((current, parent)) = stack.pop() {
+                if path.contains(&current) {
+                    let mut cycle = vec![current.clone()];
+                    let Some(mut cur) = parent else {
+                        return Some(vec![current]);
+                    };
+                    while cur != current {
+                        cycle.push(cur.clone());
+                        cur = parent_map.get(&cur).expect("Parent should be Some during backtracking cycle.").clone();
+                    }
+                    cycle.push(current);
+                    cycle.reverse();
+                    return Some(cycle);
+                }
+    
+                if visited.contains(&current) {
+                    continue;
+                }
+    
+                visited.insert(current.clone());
+                path.insert(current.clone());
+                if let Some(par) = parent {
+                    parent_map.insert(current.clone(), par);
+                }
+    
+                if let Some(nodes) = self.get(&current) {
+                    for node in nodes {
+                        stack.push((node.clone(), Some(current.clone())));
+                    }
+                }
+            }
+        } 
+    
+        None
+    }
+    
+    fn flatten_graph(&self) -> NameMap {    
+        let mut flat: NameMap = NameMap::new();
+
+        for node in self.keys() {
+            let mut stack: Vec<String> = Vec::new();
+            let mut this_flat: HashSet<String> = HashSet::new();
+    
+            stack.push(node.clone());
+    
+            while let Some(current) = stack.pop() {
+                if let Some(nebs) = self.get(&current) {
+                    for neb in nebs {
+                        if self.contains_key(neb) {
+                            stack.push(neb.clone());
+                        } else {
+                            this_flat.insert(neb.clone());
+                        }
+                    }
+                }
+            }
+            flat.insert(node.clone(), this_flat);
+        }
+
+        flat
+    }
 }
 
-impl CompilerContext {
-    fn new(ids: Identifiers) -> Self {
-        let mut types: HashSet<String> = HashSet::new();
-        types.insert(String::from("int"));
-        types.insert(String::from("str"));
-        types.insert(String::from("bool"));
+struct ActionMap(HashMap<String, (Vec<Type>, HashSet<String>)>);
+impl Deref for ActionMap {
+    type Target = HashMap<String, (Vec<Type>, HashSet<String>)>;
 
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl DerefMut for ActionMap {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+impl ActionMap {
+    fn new() -> Self {
+        ActionMap(HashMap::new())
+    }
+}
+
+pub(crate) struct GenerationContext {
+    tag_mappings: NameMap, // name -> members
+    action_mappings: ActionMap, // (name -> (Arg list, members))
+}
+
+impl GenerationContext {
+    fn new() -> Self {
         Self {
-            tag_mappings: HashMap::new(),
-            types: types,
-            action_groups: HashMap::new(),
-            field_types: HashMap::new(),
-            ids: ids,
+            tag_mappings: NameMap::new(),
+            action_mappings: ActionMap::new(),
         }
     }
 }
 
 
-// Validation Requirements (v1 and v2 are handled during collection phase):
+struct CompilerContext {
+    types: HashSet<Type>,
+    field_types: HashMap<(Type, String), Type>, // (struct, field) -> type
+    ids: Identifiers,
+    action_signatures: HashMap<String, Vec<Type>>, // action(group) name -> argument signature
+}
+
+impl CompilerContext {
+    fn new(ids: Identifiers) -> Self {
+        let mut types: HashSet<Type> = HashSet::new();
+        types.insert(Type::Bool);
+        types.insert(Type::Int);
+        types.insert(Type::String);
+
+        Self {
+            types: types,
+            field_types: HashMap::new(),
+            ids: ids,
+            action_signatures: HashMap::new(),
+        }
+    }
+}
+
+
+// Validation Requirements (v1, v2 and v12 are handled during collection phase):
 //   v1. Tags,TagGroups,Structs,Actions,ActionGroups identifiers are disjoint
 //   v2. No re-definitions
 //   v3. Members of TagGroups are defined as Tag or TagGroup
@@ -245,61 +309,120 @@ impl CompilerContext {
 //      v15. Apply tags should exist
 //      => Condition is valid (refer to validate_condition for requirements)
 //
-// Side Effects (building CompilerContext to save work)
+// Side Effects (building CompilerContext, GenerationContext to save work)
 // s1. tag_mappings: map ids of Tags and TagGroups to expanded list of Tags
-// s2. field_type_mappings: map (struct, field) to a type
+// s2. field_types: map (struct, field) to a type
 // s3. types: set of valid types
 // s4. action_groups: map ids of Actions and ActionGroups to expanded list of Actions and Type list of args
-pub fn validate_code(code: &CollectedCode, ids: Identifiers) -> Result<(), CompilerError> {
+// s5. action_signatures: map ids of Actions and ActionGroups to Type list of args
+pub fn validate_code(code: &CollectedCode, ids: Identifiers) -> Result<GenerationContext, CompilerError> {
     let mut ctx = CompilerContext::new(ids);
+    let mut gen_ctx = GenerationContext::new();
 
-    // Tags done.
+    // Tags --------------------------------------------------------------.
+    // already done.
     
-    // TagGroups
-    let mut tag_groups: HashMap<String, HashSet<String>> = HashMap::new();
+    // TagGroups --------------------------------------------------------------
+    let mut group_to_all_map: NameMap = NameMap::new();
     for tagg in &code.tag_groups {
         let (name, tags) = validate_tag_group(tagg, &ctx)?;
-        tag_groups.insert(name, tags);
+        group_to_all_map.insert(name, tags);
     }
 
-    ctx.tag_mappings = flatten_tag_groups_if_no_cycles(tag_groups, &ctx)?;
+    // v4.
+    if let Some(cycle) = group_to_all_map.group_only(|n| (&ctx).ids.tag_group_names.contains(n)).check_cycles() {
+        return Err(CompilerError::Cycle(format!("Cycle in tag groups {cycle:?}.")))
+    }
 
-    // Structs
-    let mut type_graph: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut struct_graph: HashMap<String, HashMap<String, String>> = HashMap::new();
+    // s1.
+    // Flatten groups
+    gen_ctx.tag_mappings = group_to_all_map.flatten_graph();
+    // Add mappings for normal tags to themselves.
+    for tag in &ctx.ids.tag_names {
+        let mut tmp: HashSet<String> = HashSet::new();
+        tmp.insert(tag.clone());
+        gen_ctx.tag_mappings.insert(tag.clone(), tmp);
+    }
+
+    // Structs --------------------------------------------------------------
+    let mut type_graph: NameMap = NameMap::new();
     for s in &code.structs {
         let (name, types, fields) = validate_struct(s, &ctx)?;
-        // s3.
-        ctx.types.insert(name.clone());
+        let struct_as_type = Type::Struct(TitleId(name.clone()));
+        
         type_graph.insert(name.clone(), types);
-        struct_graph.insert(name, fields);
+        
+        // s2.
+        for (fname, ftype) in fields {
+            ctx.field_types.insert((struct_as_type.clone(), fname), ftype);
+        }
+
+        // s3.
+        ctx.types.insert(struct_as_type);
     }
 
-    ctx.field_types = get_field_type_map_if_no_cycles(type_graph, struct_graph, &ctx)?;
+    // v7. 
+    if let Some(cycle) = type_graph.group_only(|n| (&ctx).ids.struct_exists(n)).check_cycles() {
+        return Err(CompilerError::Cycle(format!("Cycle in struct field type definitions {cycle:?}.")))
+    }
 
-    // Actions
-    let mut action_args: HashMap<String, Vec<String>> = HashMap::new();
+    // Actions --------------------------------------------------------------
+    let mut action_arg_types: HashMap<String, Vec<Type>> = HashMap::new();
     for action in &code.actions {
         let (name, types) = validate_action(action, &ctx)?;
-        action_args.insert(name, types);
+        action_arg_types.insert(name.clone(), types.clone());
+        // s4. actions only
+        let mut tmp: HashSet<String> = HashSet::new();
+        tmp.insert(name.clone());
+        gen_ctx.action_mappings.insert(name.clone(), (types.clone(), tmp));
+        // s5. actions only
+        ctx.action_signatures.insert(name.clone(), types.clone());
     } 
 
-    // ActionGroups
-    let mut action_groups: HashMap<String, HashSet<String>> = HashMap::new();
+    // ActionGroups --------------------------------------------------------------
+    let mut group_to_all_map: NameMap = NameMap::new();
     for action in &code.action_groups {
         let (name, actions) = validate_action_group(action, &ctx)?;
-        action_groups.insert(name, actions);
+        group_to_all_map.insert(name, actions);
     }
 
-    ctx.action_groups = flatten_action_groups_if_no_cycles(action_groups, action_args, &ctx)?;
+    // v10.
+    if let Some(cycle) = group_to_all_map.group_only(|n| (&ctx).ids.action_group_names.contains(n)).check_cycles() {
+        return Err(CompilerError::Cycle(format!("Cycle in action groups {cycle:?}.")))
+    }
 
-    // RuleBlocks
+    // Flatten groups
+    let flat_map = group_to_all_map.flatten_graph();
+    
+    // v11.
+    for (group_name, actions) in &flat_map {
+        let mut group_signature: Option<Vec<Type>> = None;
+
+        for action in actions {
+            if let Some(this_action_sig) = action_arg_types.get(action) {
+                if let Some(group_sig) = group_signature && this_action_sig != &group_sig {
+                    return Err(CompilerError::TypeError(format!("ActionGroup {group_name} has argument types {group_sig:?} but member {action} has argument types {this_action_sig:?}. ActionGroup members must share the same argument signature.")));
+                } else {
+                    group_signature = Some(this_action_sig.clone());
+                }
+            } else {
+                panic!("No action {action} in action_arg_types. All actions should be defined by now.");
+            }
+        }
+        // s4. action_group part (action part done earlier)
+        let sig = group_signature.unwrap_or(Vec::new());
+        gen_ctx.action_mappings.insert(group_name.clone(), (sig.clone(), actions.clone()));
+        // s5. action_group part (action part done earlier)
+        ctx.action_signatures.insert(group_name.clone(), sig);
+    }
+
+    // RuleBlocks --------------------------------------------------------------
     for rule_block in &code.rule_blocks {
         validate_rule_block(rule_block, &ctx)?;
     }
+    // --------------------------------------------------------------------------
 
-
-    Ok(())
+    Ok(gen_ctx)
 }
 
 fn validate_tag_group(tagg: &&TagG, ctx: &CompilerContext) -> Result<(String, HashSet<String>), CompilerError> {
@@ -317,56 +440,22 @@ fn validate_tag_group(tagg: &&TagG, ctx: &CompilerContext) -> Result<(String, Ha
     Ok((name.clone(), tags))
 }
 
-fn flatten_tag_groups_if_no_cycles(
-    tag_groups: HashMap<String, HashSet<String>>,
-    ctx: &CompilerContext) 
-    -> Result<HashMap<String, HashSet<String>>, CompilerError> {
-
-    // Construct a graph of only tag groups as nodes.
-    let mut tag_group_graph: HashMap<String, HashSet<String>> = HashMap::new();
-    for (name, tags) in &tag_groups {
-        tag_group_graph.insert(name.clone(), HashSet::new());
-        for tag in tags {
-            if ctx.ids.tag_group_names.contains(tag) {
-                tag_group_graph.get_mut(name).map(|tags| tags.insert(tag.clone()));
-            }
-        }
-    }
-
-    // v4.
-    if let Some(cycle) = check_cycles(&tag_group_graph) {
-        return Err(CompilerError::TagCycle(format!("Cycle in tag groups {cycle:?}.")))
-    }
-
-    // s1.
-    // Flatten groups
-    let mut flat_groups = flatten_graph(&tag_groups);
-    // Add mappings for normal tags to themselves.
-    for tag in &ctx.ids.tag_names {
-        let mut tmp: HashSet<String> = HashSet::new();
-        tmp.insert(tag.clone());
-        flat_groups.insert(tag.clone(), tmp);
-    }
-
-    Ok(flat_groups)
-}
-
 fn validate_struct(s: &&Struct, ctx: &CompilerContext) 
-    -> Result<(String, HashSet<String>, HashMap<String, String>), CompilerError> {
+    -> Result<(String, HashSet<String>, HashMap<String, Type>), CompilerError> {
     
     let &Struct(TitleId(name), tags, fields) = s;
     
     // v5.
     if let Some(IdList(tags)) = tags {
         for Id(tag) in tags {
-            if !ctx.tag_mappings.contains_key(tag) {
+            if !ctx.ids.tag_exists(tag) {
                 return Err(CompilerError::Undefined(format!("Struct {name} tag {tag} undefined.")));
             }
         }
     }
 
     let mut field_types: HashSet<String> = HashSet::new(); 
-    let mut fields_map: HashMap<String, String> = HashMap::new(); 
+    let mut fields_map: HashMap<String, Type> = HashMap::new(); 
 
     if let Some(FieldList(fields)) = fields {
         for Field(Id(fname), t) in fields {
@@ -380,68 +469,29 @@ fn validate_struct(s: &&Struct, ctx: &CompilerContext)
                 Type::Bool | Type::Int | Type::String => {}
             }
             field_types.insert(t.into());
-            fields_map.insert(fname.clone(), t.into());
+            fields_map.insert(fname.clone(), t.clone());
         }
     }
 
     Ok((name.clone(), field_types, fields_map))
 }
 
-fn get_field_type_map_if_no_cycles(
-    type_graph: HashMap<String, HashSet<String>>,
-    struct_graph: HashMap<String, HashMap<String, String>>,
-    ctx: &CompilerContext) 
-    -> Result<HashMap<(String, String), String>, CompilerError> {
-
-    // Construct a graph of only structs as nodes.
-    let mut struct_type_graph: HashMap<String, HashSet<String>> = HashMap::new();
-    for (name, types) in &type_graph {
-        struct_type_graph.insert(name.clone(), HashSet::new());
-        for typ in types {
-            if ctx.ids.struct_names.contains(typ) {
-                struct_type_graph.get_mut(name).map(|tags| tags.insert(typ.clone()));
-            }
-        }
-    }
-
-    // v7.
-    if let Some(cycle) = check_cycles(&struct_type_graph) {
-        return Err(CompilerError::TagCycle(format!("Cycle in struct field type definitions {cycle:?}.")))
-    }
-
-    // s2.
-    let mut mapping: HashMap<(String, String), String> = HashMap::new();
-
-    for (struct_name, field_map) in &struct_graph {
-        for (field_name, field_type) in field_map {
-            mapping.insert((struct_name.clone(), field_name.clone()), field_type.clone());
-        }
-    }
-
-    Ok(mapping)
-}
-
-fn validate_action(action: &&Action, ctx: &CompilerContext) -> Result<(String, Vec<String>), CompilerError> {
+fn validate_action(action: &&Action, ctx: &CompilerContext) -> Result<(String, Vec<Type>), CompilerError> {
     let &Action(Id(name), types) = action;
-    let mut items: Vec<String> = Vec::new();
+
+    let types = match types {
+        Some(TypeList(l)) => l.clone(),
+        None => Vec::new(),
+    };
 
     // v8.
-    if let Some(TypeList(types)) = types {
-        for typ in types {
-            match typ {
-                Type::Struct(TitleId(typ)) => {
-                    if !ctx.types.contains(typ) {
-                        return Err(CompilerError::TypeError(format!("Action {name} has argument of unknown type {typ}.")));
-                    }
-                    items.push(typ.clone());
-                }
-                Type::Bool | Type::Int | Type::String => {},
-            }
-            items.push(typ.into());
+    for typ in &types {
+        if !ctx.types.contains(typ) {
+            return Err(CompilerError::TypeError(format!("Action {name} has argument of unknown type {typ:?}.")));
         }
     }
 
-    Ok((name.clone(), items))
+    Ok((name.clone(), types))
 }
 
 fn validate_action_group(action_group: &&ActionG, ctx: &CompilerContext) -> Result<(String, HashSet<String>), CompilerError> {
@@ -450,7 +500,7 @@ fn validate_action_group(action_group: &&ActionG, ctx: &CompilerContext) -> Resu
     
     // v9.
     for Id(action) in actions {
-        if !ctx.ids.action_names.contains(action) && !ctx.ids.action_group_names.contains(action) {
+        if !ctx.ids.action_exists(action) {
             return Err(CompilerError::Undefined(format!("ActionGroup {name} member {action} undefined.")));
         }
         items.insert(action.clone());
@@ -459,103 +509,35 @@ fn validate_action_group(action_group: &&ActionG, ctx: &CompilerContext) -> Resu
     Ok((name.clone(), items))
 }
 
-fn flatten_action_groups_if_no_cycles(
-    action_groups: HashMap<String, HashSet<String>>,
-    action_args: HashMap<String, Vec<String>>,
-    ctx: &CompilerContext) 
-    -> Result<HashMap<String, (Vec<String>, HashSet<String>)>, CompilerError> {
-
-    // Construct a graph of only action groups as nodes.
-    let mut action_group_graph: HashMap<String, HashSet<String>> = HashMap::new();
-    for (name, actions) in &action_groups {
-        action_group_graph.insert(name.clone(), HashSet::new());
-        for action in actions {
-            if ctx.ids.action_group_names.contains(action) {
-                action_group_graph.get_mut(name).map(|actions| actions.insert(action.clone()));
-            }
-        }
-    }
-
-    // v10.
-    if let Some(cycle) = check_cycles(&action_group_graph) {
-        return Err(CompilerError::TagCycle(format!("Cycle in action groups {cycle:?}.")))
-    }
-
-    // s4.
-    // Flatten groups
-    let flat_groups = flatten_graph(&action_groups);
-    let mut typed_flat_groups: HashMap<String, (Vec<String>, HashSet<String>)> = HashMap::new();
-    
-    for (group_name, actions) in flat_groups {
-        let mut types: Option<&Vec<String>> = None;
-        let mut members: HashSet<String> = HashSet::new();
-
-        for action in actions {
-            let this_types = action_args.get(&action).expect("Action should be defined by this point.");
-
-            if let Some(ts) = types {
-                // v11.
-                if this_types != ts {
-                    return Err(CompilerError::TypeError(format!("ActionGroup {group_name} has argument types {this_types:?} but member {action} has argument types {types:?}. ActionGroup members must share the same argument signature.")));
-                } else {
-                    members.insert(action);
-                }
-            } else {
-                types = Some(this_types);
-                members.insert(action);
-            }
-        }
-        typed_flat_groups.insert(
-            group_name, 
-            (
-                types.expect("should be Some because action group should never be empty.")
-                    .clone(),
-                members
-            )
-        );
-    }
-
-    // Add mappings for normal actions to themselves.
-    for action in &ctx.ids.action_names {
-        let types = action_args.get(action).expect("Action should be defined by this point.");
-        let mut tmp: HashSet<String> = HashSet::new();
-        tmp.insert(action.clone());
-        typed_flat_groups.insert(action.clone(), (types.clone(), tmp));
-    }
-
-    Ok(typed_flat_groups)
-}
-
 
 struct RuleBlockContext {
-    args: HashSet<String>,
-    arg_types: HashMap<String, String>, // name -> type
+    arg_types: HashMap<String, Type>, // name -> type
     name: String
 }
 impl RuleBlockContext {
     fn new(name: String) -> Self {
         Self {
-            args: HashSet::new(),
             arg_types: HashMap::new(),
             name: name,
         }
     }
 }
 
-fn get_field_type(field_list: FieldValue, rule_ctx: &RuleBlockContext, ctx: &CompilerContext) -> Result<String, CompilerError> {
+fn get_field_type(field_list: FieldValue, rule_ctx: &RuleBlockContext, ctx: &CompilerContext) -> Result<Type, CompilerError> {
     let FieldValue(parts) = field_list.clone();
     let mut parts = parts.iter();
     let Id(field_name) = parts.next()
                             .expect("FieldValue cannot be empty.");
-    let mut field_type = rule_ctx.arg_types.get(field_name)
-                                        .expect("Calling get_field_type before populating RuleContextBlock is undefined.")
-                                        .clone();
+    let Some(field_type) = rule_ctx.arg_types.get(field_name) else {
+        return Err(CompilerError::Undefined(format!("RuleBlock {}, field {field_name}is referenced but not defined.", rule_ctx.name)));
+    };
+    let mut field_type = field_type.clone();
 
     while let Some(Id(field_name)) = &parts.next() {
         match ctx.field_types.get(&(field_type.clone(), field_name.clone())) {
             Some(v) => { field_type = v.clone(); },
             None => {
-                return Err(CompilerError::TypeError(format!("Field {field_list:?} is badly typed. No field {field_name} of type {field_type}")));
+                return Err(CompilerError::TypeError(format!("Field {field_list:?} is badly typed. No field {field_name} of type {field_type:?}")));
             }
         };
     }
@@ -568,23 +550,19 @@ fn validate_rule_block(rule_block: &&RuleBlock, ctx: &CompilerContext) -> Result
     let &RuleBlock(Id(name), args, _, Rules(rules)) = rule_block;
     let mut block_ctx = RuleBlockContext::new(name.clone());
 
-    // v12.
-    if !ctx.ids.action_names.contains(name) && !ctx.ids.action_group_names.contains(name) {
-        return Err(CompilerError::Undefined(format!("RuleBlock {name} is not an Action or ActionGroup.")));
-    }
-
-    let mut arg_types: Vec<String> = Vec::new();
-    let ArgList(args) = match args {
-        None => &ArgList(Vec::new()),
-        Some(a) => a,
+    let args = match args {
+        None => &Vec::new(),
+        Some(ArgList(a)) => a,
     };
+
+    let mut arg_types: Vec<Type> = Vec::new();
+
     for Arg(typ, Id(name)) in args {
-        block_ctx.args.insert(name.clone());
-        arg_types.push(typ.into());
-        block_ctx.arg_types.insert(name.clone(), typ.into());
+        arg_types.push(typ.clone());
+        block_ctx.arg_types.insert(name.clone(), typ.clone());
     }
     
-    let (types, _) = ctx.action_groups.get(name).expect("action_groups should be populated an name should be defined here.");
+    let types = ctx.action_signatures.get(name).expect("action_signatures should be populated and name should be defined here.");
     
     // v13.
     if &arg_types != types {
@@ -603,7 +581,7 @@ fn validate_rule_block(rule_block: &&RuleBlock, ctx: &CompilerContext) -> Result
             Rule::Apply(IdList(tags), c) => {
                 // v15.
                 for Id(tag) in tags {
-                    if !ctx.tag_mappings.contains_key(tag) {
+                    if !ctx.ids.tag_exists(tag) {
                         return Err(CompilerError::Undefined(format!("Apply Rule in {name} contains tag {tag} which is undefined.")));
                     }
                 }
@@ -629,7 +607,8 @@ fn validate_condition(cond: &Condition, block_ctx: &RuleBlockContext, ctx: &Comp
 //    . Rule valid if  
 // v17.     action exists  
 // v18.     rule block for action exists  
-// v19.     arg types match  
+// v19.     args are valid
+//   v19.1      args types match action types 
 //    . Gt,Lt,Gte,Lte valid if   
 // v20.     contained expr valid   
 // v21.     contained expr nums   
@@ -663,27 +642,30 @@ fn validate_bool_expr(expr: &BoolExpr, block_ctx: &RuleBlockContext, ctx: &Compi
         }
         BoolExpr::Rule(Id(name), args) => {
             // v17.
-            if !ctx.action_groups.contains_key(name) {
-                return Err(CompilerError::Undefined(format!("In RuleBlock {},Action {name} not defined for rule allowed condition.", block_ctx.name)));
+            if !ctx.ids.action_exists(name) {
+                return Err(CompilerError::Undefined(format!("In RuleBlock {}, Action {name} not defined for \"<rule> allowed\" condition.", block_ctx.name)));
             }
 
             // v18.
-            if !ctx.ids.rule_block_names.contains(name) {
-                return Err(CompilerError::Undefined(format!("In RuleBlock {},Action {name} has no defined RuleBlock.", block_ctx.name)));
+            if !ctx.ids.rule_exists(name) {
+                return Err(CompilerError::Undefined(format!("In RuleBlock {}, Action {name} exists but has no defined RuleBlock.", block_ctx.name)));
             }
 
-            // v19.
-            let (types, _) = ctx.action_groups.get(name).expect("name should be a key here.");
-            let mut arg_types: Vec<String> = Vec::new();
+            let action_types = ctx.action_signatures.get(name).expect("name should be a key here.");
+            let mut these_arg_types: Vec<Type> = Vec::new();
             let args = match args {
                 None => &Vec::new(),
-                Some(IdList(v)) => v,
+                Some(ExprList(v)) => v,
             };
-            for Id(i) in args {
-                arg_types.push(i.clone());
+            // v19.
+            for expr in args {
+                these_arg_types.push(
+                    validate_expr(expr, block_ctx, ctx)?.try_into()?
+                );
             }
-            if types != &arg_types {
-                return Err(CompilerError::TypeError(format!("RuleBlock {} takes args of type {arg_types:?} but Action of this name takes args {types:?}", block_ctx.name)));
+            // v19.1
+            if action_types != &these_arg_types {
+                return Err(CompilerError::TypeError(format!("RuleBlock {} takes args of type {these_arg_types:?} but Action of this name takes args {action_types:?}", block_ctx.name)));
             }
 
             Ok(())
@@ -758,11 +740,11 @@ fn validate_bool_expr(expr: &BoolExpr, block_ctx: &RuleBlockContext, ctx: &Compi
         BoolExpr::Contains(a, Id(b)) => {
             let t1 = validate_expr(a.as_ref(), block_ctx, ctx)?;
             
-            if t1 != ExprType::TagList && t1 != ExprType::Struct {
+            if t1 != ExprType::TagList && matches!(t1, ExprType::Struct(_)) {
                 return Err(CompilerError::TypeError(format!("RuleBlock {} condition {a:?} contains {b:?} is invalid. {a:?} must be any_arg, every_arg or a struct type arg.", block_ctx.name)));
             }
 
-            if !ctx.tag_mappings.contains_key(b) {
+            if !ctx.ids.tag_exists(b) {
                 return Err(CompilerError::Undefined(format!("RuleBlock {} condition {a:?} contains {b:?} is invalid. {b:?} is an undefined tag.", block_ctx.name)));
             }
             
@@ -771,12 +753,12 @@ fn validate_bool_expr(expr: &BoolExpr, block_ctx: &RuleBlockContext, ctx: &Compi
         BoolExpr::ContainsAny(a, IdList(tags)) => {
             let t1 = validate_expr(a.as_ref(), block_ctx, ctx)?;
             
-            if t1 != ExprType::TagList && t1 != ExprType::Struct {
+            if t1 != ExprType::TagList && matches!(t1, ExprType::Struct(_)) {
                 return Err(CompilerError::TypeError(format!("RuleBlock {} condition {a:?} contains_any {tags:?} is invalid. {a:?} must be any_arg, every_arg or a struct type arg.", block_ctx.name)));
             }
 
             for Id(tag) in tags {
-                if !ctx.tag_mappings.contains_key(tag) {
+                if !ctx.ids.tag_exists(tag) {
                     return Err(CompilerError::Undefined(format!("RuleBlock {} condition {a:?} contains_any {tags:?} is invalid. {tag:?} is an undefined tag.", block_ctx.name)));
                 }
             }
@@ -786,12 +768,12 @@ fn validate_bool_expr(expr: &BoolExpr, block_ctx: &RuleBlockContext, ctx: &Compi
         BoolExpr::ContainsAll(a, IdList(tags)) => {
             let t1 = validate_expr(a.as_ref(), block_ctx, ctx)?;
             
-            if t1 != ExprType::TagList && t1 != ExprType::Struct {
+            if t1 != ExprType::TagList && matches!(t1, ExprType::Struct(_)) {
                 return Err(CompilerError::TypeError(format!("RuleBlock {} condition {a:?} contains_all {tags:?} is invalid. {a:?} must be any_arg, every_arg or a struct type arg.", block_ctx.name)));
             }
 
             for Id(tag) in tags {
-                if !ctx.tag_mappings.contains_key(tag) {
+                if !ctx.ids.tag_exists(tag) {
                     return Err(CompilerError::Undefined(format!("RuleBlock {} condition {a:?} contains_all {tags:?} is invalid. {tag:?} is an undefined tag.", block_ctx.name)));
                 }
             }
@@ -801,11 +783,11 @@ fn validate_bool_expr(expr: &BoolExpr, block_ctx: &RuleBlockContext, ctx: &Compi
         BoolExpr::Lacks(a, Id(b)) => {
             let t1 = validate_expr(a.as_ref(), block_ctx, ctx)?;
             
-            if t1 != ExprType::TagList && t1 != ExprType::Struct {
+            if t1 != ExprType::TagList && matches!(t1, ExprType::Struct(_)) {
                 return Err(CompilerError::TypeError(format!("RuleBlock {} condition {a:?} lacks {b:?} is invalid. {a:?} must be any_arg, every_arg or a struct type arg.", block_ctx.name)));
             }
 
-            if !ctx.tag_mappings.contains_key(b) {
+            if !ctx.ids.tag_exists(b) {
                 return Err(CompilerError::Undefined(format!("RuleBlock {} condition {a:?} lacks {b:?} is invalid. {b:?} is an undefined tag.", block_ctx.name)));
             }
             
@@ -814,12 +796,12 @@ fn validate_bool_expr(expr: &BoolExpr, block_ctx: &RuleBlockContext, ctx: &Compi
         BoolExpr::LacksAny(a, IdList(tags)) => {
             let t1 = validate_expr(a.as_ref(), block_ctx, ctx)?;
             
-            if t1 != ExprType::TagList && t1 != ExprType::Struct {
+            if t1 != ExprType::TagList && matches!(t1, ExprType::Struct(_)) {
                 return Err(CompilerError::TypeError(format!("RuleBlock {} condition {a:?} lacks_any {tags:?} is invalid. {a:?} must be any_arg, every_arg or a struct type arg.", block_ctx.name)));
             }
 
             for Id(tag) in tags {
-                if !ctx.tag_mappings.contains_key(tag) {
+                if !ctx.ids.tag_exists(tag) {
                     return Err(CompilerError::Undefined(format!("RuleBlock {} condition {a:?} lacks_any {tags:?} is invalid. {tag:?} is an undefined tag.", block_ctx.name)));
                 }
             }
@@ -829,12 +811,12 @@ fn validate_bool_expr(expr: &BoolExpr, block_ctx: &RuleBlockContext, ctx: &Compi
         BoolExpr::LacksAll(a, IdList(tags)) => {
             let t1 = validate_expr(a.as_ref(), block_ctx, ctx)?;
             
-            if t1 != ExprType::TagList && t1 != ExprType::Struct {
+            if t1 != ExprType::TagList && matches!(t1, ExprType::Struct(_)) {
                 return Err(CompilerError::TypeError(format!("RuleBlock {} condition {a:?} lacks_all {tags:?} is invalid. {a:?} must be any_arg, every_arg or a struct type arg.", block_ctx.name)));
             }
 
             for Id(tag) in tags {
-                if !ctx.tag_mappings.contains_key(tag) {
+                if !ctx.ids.tag_exists(tag) {
                     return Err(CompilerError::Undefined(format!("RuleBlock {} condition {a:?} lacks_all {tags:?} is invalid. {tag:?} is an undefined tag.", block_ctx.name)));
                 }
             }
@@ -894,17 +876,17 @@ fn validate_expr(expr: &Expr, block_ctx: &RuleBlockContext, ctx: &CompilerContex
             Ok(ExprType::Int)
         },
         Expr::Field(f) => {
-            let t = get_field_type(f.clone(), block_ctx, ctx)?;
-            if ctx.ids.struct_names.contains(&t) {
-                return Ok(ExprType::Struct);
-            } else if t == "int" {
-                return Ok(ExprType::Int);
-            } else if t == "str" {
-                return Ok(ExprType::String);
-            } else if t == "bool" {
-                return Ok(ExprType::Bool);
-            } else {
-                panic!("Type of field should be int,bool,str or a struct");
+            let t: ExprType = get_field_type(f.clone(), block_ctx, ctx)?.into();
+            match &t {
+                ExprType::Bool | ExprType::String | ExprType::Int => Ok(t),
+                ExprType::Struct(s) => {
+                    if ctx.ids.struct_exists(s) {
+                        Ok(t)
+                    } else {
+                        Err(CompilerError::Undefined(format!("RuleBlock {}, field expression {f:?} of type Struct({s}) is undefined.", block_ctx.name)))
+                    }
+                }
+                ExprType::Regex | ExprType::TagList => panic!("This shouldn't happen from Type::<ExprType>::into")
             }
         },
         Expr::String(_) => {

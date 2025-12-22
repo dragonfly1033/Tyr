@@ -119,7 +119,7 @@ pub BoolNot: Box<BoolExpr> = {
 };
 pub BoolTerm: Box<BoolExpr> = {
     "(" <a:BoolExpr> ")" => a,
-    <i:Id> "(" <l:IdList?> ")" "allowed" => Box::new(BoolExpr::Rule(i, l)),
+    <i:Id> "(" <l:ExprList?> ")" "allowed" => Box::new(BoolExpr::Rule(i, l)),
 
     <a:Expr> ">" <b:Expr> => Box::new(BoolExpr::Gt(a, b)),
     <a:Expr> "<" <b:Expr> => Box::new(BoolExpr::Lt(a, b)),
@@ -181,6 +181,12 @@ pub Term: Box<Expr> = {
     "every_arg" => Box::new(Expr::EveryArg),
 };
 
+pub ExprList: ExprList = {
+    <f:Expr> <mut v:("," <Expr>)*> ","? => {
+        v.insert(0, f);
+        ExprList(v)
+    }
+}
 
 pub CodeItem: CodeItem = {
     <t:Tag> ";" => CodeItem::Tag(t),

@@ -22,7 +22,7 @@ pub(crate) enum CompilerError {
     #[allow(dead_code)]
     Undefined(String),
     #[allow(dead_code)]
-    TagCycle(String),
+    Cycle(String),
     #[allow(dead_code)]
     TypeError(String),
 }
@@ -45,11 +45,11 @@ fn compile(file_input: String) {
     println!("{lines:?}");
 
     let (collected_code, identifiers) = check::collect_code(&lines).inspect_err(|e| {
-        panic!("Failed to parse: {e:?}");
+        panic!("Failed to collect: {e:?}");
     }).unwrap();
 
-    let _ = check::validate_code(&collected_code, identifiers).inspect_err(|e| {
-        panic!("Type check failed: {e:?}");
+    let generation_context = check::validate_code(&collected_code, identifiers).inspect_err(|e| {
+        panic!("Validation failed: {e:?}");
     }).unwrap();
 
 
@@ -91,7 +91,6 @@ fn exit_err(msg: String) {
 }
 
 #[cfg(test)]
-
 mod test {
     use crate::pre_process;
 
