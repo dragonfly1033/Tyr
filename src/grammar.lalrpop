@@ -56,13 +56,13 @@ pub FieldList: FieldList = {
 
 pub Struct: Struct = {
     "struct" <n:TitleId> "[" <t:IdList?> "]" "{" <f:FieldList?> "}" => {
-        Struct(n, t, f)
+        Struct(n, t.unwrap_or(Vec::new()), f.unwrap_or(Vec::new()))
     }
 }
 
 
 pub Action: Action = {
-    "action" <i:Id> "(" <t:TypeList?> ")" => Action(i, t),
+    "action" <i:Id> "(" <t:TypeList?> ")" => Action(i, t.unwrap_or(Vec::new())),
 };
 pub ActionG: ActionG = {
     "actiongroup" <i:Id> "=" <l:IdList> => ActionG(i, l),
@@ -94,7 +94,7 @@ Rules: Rules = {
 };
 pub RuleBlock: RuleBlock = {
     "rules" <i:Id> "(" <a:ArgList?> ")" "fallback" <f:Fallback> "{" <r:Rules> "}" => {
-        RuleBlock(i, a, f, r)
+        RuleBlock(i, a.unwrap_or(Vec::new()), f, r)
     },
 };
 
@@ -119,7 +119,7 @@ pub BoolNot: Box<BoolExpr> = {
 };
 pub BoolTerm: Box<BoolExpr> = {
     "(" <a:BoolExpr> ")" => a,
-    <i:Id> "(" <l:ExprList?> ")" "allowed" => Box::new(BoolExpr::Rule(i, l)),
+    <i:Id> "(" <l:ExprList?> ")" "allowed" => Box::new(BoolExpr::Rule(i, l.unwrap_or(Vec::new()))),
 
     <a:Expr> ">" <b:Expr> => Box::new(BoolExpr::Gt(a, b)),
     <a:Expr> "<" <b:Expr> => Box::new(BoolExpr::Lt(a, b)),

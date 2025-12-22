@@ -446,31 +446,29 @@ fn validate_struct(s: &&Struct, ctx: &CompilerContext)
     let &Struct(TitleId(name), tags, fields) = s;
     
     // v5.
-    if let Some(IdList(tags)) = tags {
-        for Id(tag) in tags {
-            if !ctx.ids.tag_exists(tag) {
-                return Err(CompilerError::Undefined(format!("Struct {name} tag {tag} undefined.")));
-            }
+    let IdList(tags) = tags;
+    for Id(tag) in tags {
+        if !ctx.ids.tag_exists(tag) {
+            return Err(CompilerError::Undefined(format!("Struct {name} tag {tag} undefined.")));
         }
     }
 
     let mut field_types: HashSet<String> = HashSet::new(); 
     let mut fields_map: HashMap<String, Type> = HashMap::new(); 
 
-    if let Some(FieldList(fields)) = fields {
-        for Field(Id(fname), t) in fields {
-            // v6.
-            match t {
-                Type::Struct(TitleId(typ)) => { 
-                    if !ctx.ids.struct_names.contains(typ) {
-                        return Err(CompilerError::Undefined(format!("Struct {name} field {fname} type {typ} undefined.")));
-                    }
-                },
-                Type::Bool | Type::Int | Type::String => {}
-            }
-            field_types.insert(t.into());
-            fields_map.insert(fname.clone(), t.clone());
+    let FieldList(fields) = fields;
+    for Field(Id(fname), t) in fields {
+        // v6.
+        match t {
+            Type::Struct(TitleId(typ)) => { 
+                if !ctx.ids.struct_names.contains(typ) {
+                    return Err(CompilerError::Undefined(format!("Struct {name} field {fname} type {typ} undefined.")));
+                }
+            },
+            Type::Bool | Type::Int | Type::String => {}
         }
+        field_types.insert(t.into());
+        fields_map.insert(fname.clone(), t.clone());
     }
 
     Ok((name.clone(), field_types, fields_map))
@@ -479,10 +477,8 @@ fn validate_struct(s: &&Struct, ctx: &CompilerContext)
 fn validate_action(action: &&Action, ctx: &CompilerContext) -> Result<(String, Vec<Type>), CompilerError> {
     let &Action(Id(name), types) = action;
 
-    let types = match types {
-        Some(TypeList(l)) => l.clone(),
-        None => Vec::new(),
-    };
+    let TypeList(types) = types;
+    let types = types.clone();
 
     // v8.
     for typ in &types {
@@ -550,10 +546,7 @@ fn validate_rule_block(rule_block: &&RuleBlock, ctx: &CompilerContext) -> Result
     let &RuleBlock(Id(name), args, _, Rules(rules)) = rule_block;
     let mut block_ctx = RuleBlockContext::new(name.clone());
 
-    let args = match args {
-        None => &Vec::new(),
-        Some(ArgList(a)) => a,
-    };
+    let ArgList(args) = args;
 
     let mut arg_types: Vec<Type> = Vec::new();
 
@@ -653,10 +646,8 @@ fn validate_bool_expr(expr: &BoolExpr, block_ctx: &RuleBlockContext, ctx: &Compi
 
             let action_types = ctx.action_signatures.get(name).expect("name should be a key here.");
             let mut these_arg_types: Vec<Type> = Vec::new();
-            let args = match args {
-                None => &Vec::new(),
-                Some(ExprList(v)) => v,
-            };
+            let ExprList(args) = args;
+
             // v19.
             for expr in args {
                 these_arg_types.push(

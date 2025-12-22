@@ -68,11 +68,11 @@ pub struct Field(pub Id, pub Type);
 #[allow(unused)]#[derive(Debug,PartialEq)]
 pub struct FieldList(pub Vec<Field>);
 #[allow(unused)]#[derive(Debug,PartialEq)]
-pub struct Struct(pub TitleId, pub Option<IdList>, pub Option<FieldList>);
+pub struct Struct(pub TitleId, pub IdList, pub FieldList);
 
 
 #[allow(unused)]#[derive(Debug,PartialEq)]
-pub struct Action(pub Id, pub Option<TypeList>);
+pub struct Action(pub Id, pub TypeList);
 #[allow(unused)]#[derive(Debug,PartialEq)]
 pub struct ActionG(pub Id, pub IdList);
 
@@ -96,7 +96,7 @@ pub enum Rule {
 #[allow(unused)]#[derive(Debug,PartialEq)]
 pub struct Rules(pub Vec<Rule>);
 #[allow(unused)]#[derive(Debug,PartialEq)]
-pub struct RuleBlock(pub Id, pub Option<ArgList>, pub Fallback, pub Rules);
+pub struct RuleBlock(pub Id, pub ArgList, pub Fallback, pub Rules);
 
 
 #[allow(unused)]#[derive(Debug,PartialEq)]
@@ -113,7 +113,7 @@ pub enum BoolExpr {
     Or(Box<BoolExpr>, Box<BoolExpr>),
     Not(Box<BoolExpr>),
     
-    Rule(Id, Option<ExprList>),
+    Rule(Id, ExprList),
 
     Gt(Box<Expr>, Box<Expr>),
     Lt(Box<Expr>, Box<Expr>),
@@ -220,7 +220,7 @@ pub struct Code(pub Vec<CodeItem>);
 
 #[cfg(test)]
 mod test {
-    use crate::{ast::{Action, ActionG, Arg, ArgList, BoolExpr, CodeItem, Condition, Expr, Fallback, Field, FieldList, FieldValue, Id, IdList, RealRegex, Rule, RuleBlock, Rules, Struct, Tag, TagG, TitleId, Type, TypeList}, grammar};
+    use crate::{ast::{Action, ActionG, Arg, ArgList, BoolExpr, CodeItem, Condition, Expr, ExprList, Fallback, Field, FieldList, FieldValue, Id, IdList, RealRegex, Rule, RuleBlock, Rules, Struct, Tag, TagG, TitleId, Type, TypeList}, grammar};
 
     #[test]
     fn test_id_parser() {
@@ -491,15 +491,15 @@ mod test {
 
         test_valid_word("action this(str, int)", Action(
             Id(String::from("this")),
-            Some(TypeList(vec![Type::String, Type::Int])),
+            TypeList(vec![Type::String, Type::Int]),
         ));
         test_valid_word("action this()", Action(
             Id(String::from("this")),
-            None,
+            TypeList(Vec::new()),
         ));
         test_valid_word("action this(bool,This,str)", Action(
             Id(String::from("this")),
-            Some(TypeList(vec![Type::Bool, Type::Struct(TitleId(String::from("This"))), Type::String])),
+            TypeList(vec![Type::Bool, Type::Struct(TitleId(String::from("This"))), Type::String]),
         ));
         test_invalid_word("acton this()");
         test_invalid_word("action This(that)");
@@ -764,18 +764,18 @@ mod test {
 
         test_valid_word("struct Name [tag1,tag2] { field f1: int, field f2: int }", Struct(
             TitleId(String::from("Name")),
-            Some(tag_parser.parse("tag1,tag2").expect("Failed to parse tags in test.")),
-            Some(field_parser.parse("field f1: int, field f2: int").expect("Failed to parse fields in test.")),
+            tag_parser.parse("tag1,tag2").expect("Failed to parse tags in test."),
+            field_parser.parse("field f1: int, field f2: int").expect("Failed to parse fields in test."),
         ));
         test_valid_word("struct Name [] { field f1: int, field f2: int }", Struct(
             TitleId(String::from("Name")),
-            None,
-            Some(field_parser.parse("field f1: int, field f2: int").expect("Failed to parse fields in test.")),
+            IdList(Vec::new()),
+            field_parser.parse("field f1: int, field f2: int").expect("Failed to parse fields in test."),
         ));
         test_valid_word("struct Name [] {}", Struct(
             TitleId(String::from("Name")),
-            None,
-            None,
+            IdList(Vec::new()),
+            FieldList(Vec::new()),
         ));
         test_invalid_word("struct Name [,] {}");
         test_invalid_word("struct Name [] {,}");
@@ -839,12 +839,12 @@ mod test {
         test_valid_word("this(that, other) allowed", 
             BoolExpr::Rule(
                 Id(String::from("this")),
-                Some(expr_list_parser.parse("that,other").expect("Failed to parse IdList in test."))
+                expr_list_parser.parse("that,other").expect("Failed to parse IdList in test.")
             ));
         test_valid_word("this() allowed", 
             BoolExpr::Rule(
                 Id(String::from("this")),
-                None,
+                ExprList(Vec::new()),
             ));
         test_valid_word("5<4", 
             BoolExpr::Lt(
@@ -992,8 +992,8 @@ mod test {
         test_valid_word("rules name(str this, int that, Wow other) fallback deny { allow always; deny never; }", 
             RuleBlock(
                 Id(String::from("name")), 
-                Some(args_parser.parse("str this, int that, Wow other")
-                                .expect("Failed to parse ArgList in test.")), 
+                args_parser.parse("str this, int that, Wow other")
+                                .expect("Failed to parse ArgList in test."), 
                 Fallback::Deny, 
                 Rules(vec![
                     Rule::Allow(Condition::Always),
@@ -1004,7 +1004,7 @@ mod test {
         test_valid_word("rules name() fallback deny {}", 
             RuleBlock(
                 Id(String::from("name")), 
-                None, 
+                ArgList(Vec::new()), 
                 Fallback::Deny, 
                 Rules(vec![])
             )
