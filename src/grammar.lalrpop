@@ -45,7 +45,7 @@ pub TypeList: TypeList = {
 };
 
 pub Field: Field = {
-    "field" <i:Id> ":" <t:Type> => Field(i, t),
+    <i:Id> ":" <t:Type> => Field(i, t),
 };
 pub FieldList: FieldList = {
     <f:Field> <mut v:("," <Field>)*> ","? => {
@@ -56,26 +56,16 @@ pub FieldList: FieldList = {
 
 pub Struct: Struct = {
     "struct" <n:TitleId> "[" <t:IdList?> "]" "{" <f:FieldList?> "}" => {
-        Struct(n, t.unwrap_or(Vec::new()), f.unwrap_or(Vec::new()))
+        Struct(n, t.unwrap_or(IdList(Vec::new())), f.unwrap_or(FieldList(Vec::new())))
     }
 }
 
 
 pub Action: Action = {
-    "action" <i:Id> "(" <t:TypeList?> ")" => Action(i, t.unwrap_or(Vec::new())),
+    "action" <i:Id> "(" <t:TypeList?> ")" => Action(i, t.unwrap_or(TypeList(Vec::new()))),
 };
 pub ActionG: ActionG = {
     "actiongroup" <i:Id> "=" <l:IdList> => ActionG(i, l),
-};
-
-pub Arg: Arg = {
-    <t:Type> <i:Id> => Arg(t, i),
-};
-pub ArgList: ArgList = {
-    <f:Arg> <mut v:("," <Arg>)*> ","? => {
-        v.insert(0, f);
-        ArgList(v)
-    }
 };
 
 pub Fallback: Fallback = {
@@ -93,8 +83,8 @@ Rules: Rules = {
     <v:Rule*> => Rules(v),
 };
 pub RuleBlock: RuleBlock = {
-    "rules" <i:Id> "(" <a:ArgList?> ")" "fallback" <f:Fallback> "{" <r:Rules> "}" => {
-        RuleBlock(i, a.unwrap_or(Vec::new()), f, r)
+    "rules" <i:Id> "(" <a:FieldList?> ")" "fallback" <f:Fallback> "{" <r:Rules> "}" => {
+        RuleBlock(i, a.unwrap_or(FieldList(Vec::new())), f, r)
     },
 };
 
@@ -119,7 +109,7 @@ pub BoolNot: Box<BoolExpr> = {
 };
 pub BoolTerm: Box<BoolExpr> = {
     "(" <a:BoolExpr> ")" => a,
-    <i:Id> "(" <l:ExprList?> ")" "allowed" => Box::new(BoolExpr::Rule(i, l.unwrap_or(Vec::new()))),
+    <i:Id> "(" <l:ExprList?> ")" "allowed" => Box::new(BoolExpr::Rule(i, l.unwrap_or(ExprList(Vec::new())))),
 
     <a:Expr> ">" <b:Expr> => Box::new(BoolExpr::Gt(a, b)),
     <a:Expr> "<" <b:Expr> => Box::new(BoolExpr::Lt(a, b)),
@@ -171,11 +161,9 @@ pub Term: Box<Expr> = {
         let inner = &l[1..l.len()-1];
         Box::new(Expr::String(inner.to_string()))
     },
-    <r:r#"`[^"`]*`"#> =>? {
+    <r:r#"`[^"`]*`"#> => {
         let inner = &r[1..r.len()-1];
-        Ok(Box::new(Expr::Regex(RealRegex::new(inner).map_err(|e| {
-            ParseError::User { error: "Invalid Regex." }
-        })?)))
+        Box::new(Expr::Regex(inner.to_string()))
     },
     "any_arg" => Box::new(Expr::AnyArg),
     "every_arg" => Box::new(Expr::EveryArg),
