@@ -122,7 +122,7 @@ pub(crate) fn collect_code(lines: &Vec<CodeItem>) -> Result<(CollectedCode, Iden
                 if !ids.tag_names.insert(name.clone()) {
                     return Err(CompilerError::AlreadyDefined(format!("Tag {name} defined multiple times.")));
                 }
-                if let Some(cat) = cat_map.get(name) && *cat != CodeItemType::Tag {
+                if let Some(cat) = cat_map.get(name) {
                     return Err(CompilerError::AlreadyDefined(format!("Tag {name} defined as {cat:?} elsewhere.")));
                 }
                 cat_map.insert(name.clone(), CodeItemType::Tag);
@@ -133,7 +133,7 @@ pub(crate) fn collect_code(lines: &Vec<CodeItem>) -> Result<(CollectedCode, Iden
                 if !ids.tag_group_names.insert(name.clone()) {
                     return Err(CompilerError::AlreadyDefined(format!("TagG {name} defined multiple times.")));
                 }
-                if let Some(cat) = cat_map.get(name) && *cat != CodeItemType::TagG {
+                if let Some(cat) = cat_map.get(name) {
                     return Err(CompilerError::AlreadyDefined(format!("TagG {name} defined as {cat:?} elsewhere.")));
                 }
                 cat_map.insert(name.clone(), CodeItemType::TagG);
@@ -144,7 +144,7 @@ pub(crate) fn collect_code(lines: &Vec<CodeItem>) -> Result<(CollectedCode, Iden
                 if !ids.struct_names.insert(name.clone()) {
                     return Err(CompilerError::AlreadyDefined(format!("Struct {name} defined multiple times.")));
                 }
-                if let Some(cat) = cat_map.get(name) && *cat != CodeItemType::Struct {
+                if let Some(cat) = cat_map.get(name) {
                     return Err(CompilerError::AlreadyDefined(format!("Struct {name} defined as {cat:?} elsewhere.")));
                 }
                 cat_map.insert(name.clone(), CodeItemType::Struct);
@@ -155,8 +155,12 @@ pub(crate) fn collect_code(lines: &Vec<CodeItem>) -> Result<(CollectedCode, Iden
                 if !ids.action_names.insert(name.clone()) {
                     return Err(CompilerError::AlreadyDefined(format!("Action {name} defined multiple times.")));
                 }
-                if let Some(cat) = cat_map.get(name) && *cat != CodeItemType::Action {
-                    return Err(CompilerError::AlreadyDefined(format!("Action {name} defined as {cat:?} elsewhere.")));
+                if let Some(cat) = cat_map.get(name) {
+                    if *cat == CodeItemType::RuleBlock {
+                        cat_map.insert(name.clone(), CodeItemType::Action);
+                    } else {
+                        return Err(CompilerError::AlreadyDefined(format!("Action {name} defined as {cat:?} elsewhere.")));
+                    }
                 }
                 cat_map.insert(name.clone(), CodeItemType::Action);
                 coll.actions.push(a);
@@ -166,8 +170,12 @@ pub(crate) fn collect_code(lines: &Vec<CodeItem>) -> Result<(CollectedCode, Iden
                 if !ids.action_group_names.insert(name.clone()) {
                     return Err(CompilerError::AlreadyDefined(format!("ActionG {name} defined multiple times.")));
                 }
-                if let Some(cat) = cat_map.get(name) && *cat != CodeItemType::ActionG {
-                    return Err(CompilerError::AlreadyDefined(format!("ActionG {name} defined as {cat:?} elsewhere.")));
+                if let Some(cat) = cat_map.get(name) {
+                    if *cat == CodeItemType::RuleBlock {
+                        cat_map.insert(name.clone(), CodeItemType::ActionG);
+                    } else {
+                        return Err(CompilerError::AlreadyDefined(format!("ActionG {name} defined as {cat:?} elsewhere.")));
+                    }
                 }
                 cat_map.insert(name.clone(), CodeItemType::ActionG);
                 coll.action_groups.push(a);
@@ -177,11 +185,15 @@ pub(crate) fn collect_code(lines: &Vec<CodeItem>) -> Result<(CollectedCode, Iden
                 if !ids.rule_block_names.insert(name.clone()) {
                     return Err(CompilerError::AlreadyDefined(format!("RuleBlock {name} defined multiple times.")));
                 }
-                if let Some(cat) = cat_map.get(name) && *cat != CodeItemType::RuleBlock {
-                    return Err(CompilerError::AlreadyDefined(format!("RuleBlock {name} defined as {cat:?} not Action or ActionGroup.")));
+                // Rule blocks are supposed to have names of actions.
+                if let Some(cat) = cat_map.get(name) {
+                    if *cat != CodeItemType::Action && *cat != CodeItemType::ActionG { 
+                        return Err(CompilerError::AlreadyDefined(format!("RuleBlock {name} defined as {cat:?} not Action or ActionGroup.")));
+                    }
+                } else {
+                    cat_map.insert(name.clone(), CodeItemType::RuleBlock);
+                    coll.rule_blocks.push(r);
                 }
-                cat_map.insert(name.clone(), CodeItemType::RuleBlock);
-                coll.rule_blocks.push(r);
             }
         }
     }
