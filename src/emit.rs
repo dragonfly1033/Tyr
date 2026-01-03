@@ -337,7 +337,7 @@ fn emit_struct(s: &Struct) -> TokenStream {
     let fields = emit_fields(fields);
 
     quote! {
-        #[derive(Debug)]
+        #[derive(Debug,PartialEq,Eq)]
         pub struct #name {
             #fields,
             tags: TagSet,

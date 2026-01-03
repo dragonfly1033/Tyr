@@ -14,6 +14,12 @@ use std::{
 };
 
 #[derive(Debug)]
+pub(crate) enum CycleCheckStackValue {
+    Enter((String, Option<String>)),
+    Exit(String),
+}
+
+#[derive(Debug)]
 pub(crate) struct NameMap(HashMap<String, HashSet<String>>);
 impl Deref for NameMap {
     type Target = HashMap<String, HashSet<String>>;
@@ -58,43 +64,52 @@ impl NameMap {
         let mut visited: HashSet<String> = HashSet::new();
 
         for name in names {
-            let mut stack: Vec<(String, Option<String>)> = Vec::new();
+            let mut stack: Vec<CycleCheckStackValue> = Vec::new();
             let mut path: HashSet<String> = HashSet::new();
             let mut parent_map: HashMap<String, String> = HashMap::new();
 
-            stack.push((name.clone(), None));
+            stack.push(CycleCheckStackValue::Enter((name.clone(), None)));
 
-            while let Some((current, parent)) = stack.pop() {
-                if path.contains(&current) {
-                    let mut cycle = vec![current.clone()];
-                    let Some(mut cur) = parent else {
-                        return Some(vec![current]);
-                    };
-                    while cur != current {
-                        cycle.push(cur.clone());
-                        cur = parent_map
-                            .get(&cur)
-                            .expect("Parent should be Some during backtracking cycle.")
-                            .clone();
+            while let Some(val) = stack.pop() {
+                match val {
+                    CycleCheckStackValue::Enter((current, parent)) => {
+                        if path.contains(&current) {
+                            let mut cycle = vec![current.clone()];
+                            let Some(mut cur) = parent else {
+                                return Some(vec![current]);
+                            };
+                            while cur != current {
+                                cycle.push(cur.clone());
+                                cur = parent_map
+                                    .get(&cur)
+                                    .expect("Parent should be Some during backtracking cycle.")
+                                    .clone();
+                            }
+                            cycle.push(current);
+                            cycle.reverse();
+                            return Some(cycle);
+                        }
+        
+                        if visited.contains(&current) {
+                            continue;
+                        }
+        
+                        visited.insert(current.clone());
+                        path.insert(current.clone());
+                        if let Some(par) = parent {
+                            parent_map.insert(current.clone(), par);
+                        }
+        
+                        stack.push(CycleCheckStackValue::Exit(current.clone()));
+        
+                        if let Some(nodes) = self.get(&current) {
+                            for node in nodes {
+                                stack.push(CycleCheckStackValue::Enter((node.clone(), Some(current.clone()))));
+                            }
+                        }        
                     }
-                    cycle.push(current);
-                    cycle.reverse();
-                    return Some(cycle);
-                }
-
-                if visited.contains(&current) {
-                    continue;
-                }
-
-                visited.insert(current.clone());
-                path.insert(current.clone());
-                if let Some(par) = parent {
-                    parent_map.insert(current.clone(), par);
-                }
-
-                if let Some(nodes) = self.get(&current) {
-                    for node in nodes {
-                        stack.push((node.clone(), Some(current.clone())));
+                    CycleCheckStackValue::Exit(v) => {
+                        path.remove(&v.clone());
                     }
                 }
             }
@@ -205,6 +220,7 @@ impl CompilerContext {
 //   v4. TagGroup definitions are not cyclic
 //   v5. Struct tags exist
 //   v6. Struct field types exist
+//      v6.1. Struct field names are a set
 //   v7. Struct definitions are not cyclic
 //   v8. Action arg types exist
 //   v9. Members of ActionGroups are defined as Action or ActionGroup
@@ -329,18 +345,16 @@ pub fn validate_code(
         let mut group_signature: Option<Vec<Type>> = None;
 
         for action in actions {
-            if let Some(this_action_sig) = action_arg_types.get(action) {
-                if let Some(group_sig) = group_signature
-                    && this_action_sig != &group_sig
-                {
-                    return Err(CompilerError::TypeError(format!("ActionGroup {group_name} has argument types {group_sig:?} but member {action} has argument types {this_action_sig:?}. ActionGroup members must share the same argument signature.")));
-                } else {
-                    group_signature = Some(this_action_sig.clone());
-                }
+
+            // no actions here are groups because this is post flatten.
+            let this_action_sig = action_arg_types.get(action).expect("No action {action} in action_arg_types. All actions should be defined by now.");
+
+            if let Some(group_sig) = group_signature
+                && this_action_sig != &group_sig
+            {
+                return Err(CompilerError::TypeError(format!("ActionGroup {group_name} has argument types {group_sig:?} but member {action} has argument types {this_action_sig:?}. ActionGroup members must share the same argument signature.")));
             } else {
-                panic!(
-                    "No action {action} in action_arg_types. All actions should be defined by now."
-                );
+                group_signature = Some(this_action_sig.clone());
             }
         }
         // s4. action_group part (action part done earlier)
@@ -438,7 +452,13 @@ fn validate_struct(
             Type::Bool | Type::Int | Type::String => {}
         }
         field_types.insert(t.into());
-        fields_map.insert(fname.clone(), t.clone());
+
+        // v6.1
+        if let Some(_) = fields_map.insert(fname.clone(), t.clone()) {
+            return Err(CompilerError::AlreadyDefined(format!(
+                "Struct {name} field {fname} already defined."
+            )));
+        }
     }
 
     Ok((name.clone(), field_types, fields_map, tags_set))
@@ -508,7 +528,7 @@ fn get_field_type(
     let Id(field_name) = parts.next().expect("FieldValue cannot be empty.");
     let Some(field_type) = rule_ctx.arg_types.get(field_name) else {
         return Err(CompilerError::Undefined(format!(
-            "RuleBlock {}, field {field_name}is referenced but not defined.",
+            "RuleBlock {}, field {field_name} is referenced but not defined.",
             rule_ctx.name
         )));
     };
@@ -523,7 +543,7 @@ fn get_field_type(
                 field_type = v.clone();
             }
             None => {
-                return Err(CompilerError::TypeError(format!("Field {field_list:?} is badly typed. No field {field_name} of type {field_type:?}")));
+                return Err(CompilerError::Undefined(format!("No field {field_name} of type {field_type:?}")));
             }
         };
     }
@@ -544,7 +564,9 @@ fn validate_rule_block(
 
     for Field(Id(name), typ) in args {
         arg_types.push(typ.clone());
-        block_ctx.arg_types.insert(name.clone(), typ.clone());
+        if let Some(_) = block_ctx.arg_types.insert(name.clone(), typ.clone()) {
+            return Err(CompilerError::AlreadyDefined(format!("RuleBlock {name} argument {name:?} is defined multiple times.")));
+        }
     }
 
     let types = ctx
@@ -953,19 +975,19 @@ fn validate_expr(
             Ok(ExprType::Int)
         }
         Expr::Field(f) => {
-            // 35, v36.
+            // v35, v36.
             Ok(get_field_type(f.clone(), block_ctx, ctx)?.into())
         }
         Expr::Num(_) => {
-            // 37.
+            // v37.
             Ok(ExprType::Int)
         }
         Expr::String(_) => {
-            // 38.
+            // v38.
             Ok(ExprType::String)
         }
         Expr::Regex(r) => {
-            // 39.
+            // v39.
             if let Err(e) = Regex::new(r) {
                 return Err(CompilerError::InvalidRegex(format!(
                     "RuleBlock {} expression {r:?} is invalid: {:?}",
@@ -986,6 +1008,52 @@ mod test {
     use super::*;
     use crate::ast::*;
     use crate::collect;
+
+    #[allow(unused)] macro_rules! or {($a:expr, $b:expr) => { Box::new(BoolExpr::Or($a, $b)) }}
+    #[allow(unused)] macro_rules! and {($a:expr, $b:expr) => { Box::new(BoolExpr::And($a, $b)) }}
+    #[allow(unused)] macro_rules! not {($a:expr) => { Box::new(BoolExpr::Not($a)) }}
+    #[allow(unused)] macro_rules! rule {($a:literal, $b:expr) => { Box::new(BoolExpr::Rule(Id(String::from($a)), ExprList($b))) }}
+    #[allow(unused)] macro_rules! gt {($a:expr, $b:expr) => { Box::new(BoolExpr::Gt($a, $b)) }}
+    #[allow(unused)] macro_rules! lt {($a:expr, $b:expr) => { Box::new(BoolExpr::Lt($a, $b)) }}
+    #[allow(unused)] macro_rules! gte {($a:expr, $b:expr) => { Box::new(BoolExpr::Gte($a, $b)) }}
+    #[allow(unused)] macro_rules! lte {($a:expr, $b:expr) => { Box::new(BoolExpr::Lte($a, $b)) }}
+    #[allow(unused)] macro_rules! eq {($a:expr, $b:expr) => { Box::new(BoolExpr::Eq($a, $b)) }}
+    #[allow(unused)] macro_rules! neq {($a:expr, $b:expr) => { Box::new(BoolExpr::Neq($a, $b)) }}
+    #[allow(unused)] macro_rules! match_ {($a:expr, $b:expr) => { Box::new(BoolExpr::Match($a, $b)) }}
+    #[allow(unused)] macro_rules! contains {($a:expr, $b:expr) => { Box::new(BoolExpr::Contains($a, Id(String::from($b)))) }}
+    #[allow(unused)] macro_rules! contains_all {($a:expr, [$($b:literal),*]) => { 
+        Box::new(BoolExpr::ContainsAll($a, IdList(vec![$(Id(String::from($b))),*]))) 
+    }}
+    #[allow(unused)] macro_rules! contains_any {($a:expr, [$($b:literal),*]) => { 
+        Box::new(BoolExpr::ContainsAny($a, IdList(vec![$(Id(String::from($b))),*]))) 
+    }}
+    #[allow(unused)] macro_rules! lacks {($a:expr, $b:expr) => { Box::new(BoolExpr::Lacks($a, Id(String::from($b)))) }}
+    #[allow(unused)] macro_rules! lacks_all {($a:expr, [$($b:literal),*]) => { 
+        Box::new(BoolExpr::LacksAll($a, IdList(vec![$(Id(String::from($b))),*]))) 
+    }}
+    #[allow(unused)] macro_rules! lacks_any {($a:expr, [$($b:literal),*]) => { 
+        Box::new(BoolExpr::LacksAny($a, IdList(vec![$(Id(String::from($b))),*]))) 
+    }}
+    #[allow(unused)] macro_rules! true_ {() => { Box::new(BoolExpr::True) }}
+    #[allow(unused)] macro_rules! false_ {() => { Box::new(BoolExpr::False) }}
+    #[allow(unused)] macro_rules! add {($a:expr, $b:expr) => { Box::new(Expr::Add($a, $b)) }}
+    #[allow(unused)] macro_rules! sub {($a:expr, $b:expr) => { Box::new(Expr::Sub($a, $b)) }}
+    #[allow(unused)] macro_rules! mul {($a:expr, $b:expr) => { Box::new(Expr::Mul($a, $b)) }}
+    #[allow(unused)] macro_rules! div {($a:expr, $b:expr) => { Box::new(Expr::Div($a, $b)) }}
+    #[allow(unused)] macro_rules! neg {($a:expr) => { Box::new(Expr::Neg($a)) }}
+    #[allow(unused)] macro_rules! num {($a:literal) => { Box::new(Expr::Num($a)) }}
+    #[allow(unused)] macro_rules! field {($($a:literal).*) => { Box::new(Expr::Field(FieldValue(vec![$(Id(String::from($a))),*]))) }}
+    #[allow(unused)] macro_rules! string {($a:literal) => { Box::new(Expr::String(String::from($a))) }}
+    #[allow(unused)] macro_rules! regex {($a:literal) => { Box::new(Expr::Regex(String::from($a))) }}
+    #[allow(unused)] macro_rules! any_arg {() => { Box::new(Expr::AnyArg) }}
+    #[allow(unused)] macro_rules! every_arg {() => { Box::new(Expr::EveryArg) }}
+    #[allow(unused)] macro_rules! struct_type {($a:literal) => { Type::Struct(TitleId(String::from($a))) }}
+    #[allow(unused)] macro_rules! deny {() => { Fallback::Deny }}
+    #[allow(unused)] macro_rules! allow {() => { Fallback::Allow }}
+    #[allow(unused)] macro_rules! warn {() => { Fallback::Warn }}
+    #[allow(unused)] macro_rules! always {() => { Condition::Always }}
+    #[allow(unused)] macro_rules! never {() => { Condition::Never }}
+    #[allow(unused)] macro_rules! when {($a:expr) => { Condition::When($a) }}
 
     // Test mock - helper functions to build test data
     #[allow(unused)]
@@ -1027,17 +1095,27 @@ mod test {
             ))
         }
 
-        pub fn rule_block(name: &str, args: Vec<(Type, &str)>, rules: Vec<Rule>) -> CodeItem {
+        pub fn rule_block(name: &str, args: Vec<(&str, Type)>, fallback: Fallback, rules: Vec<Rule>) -> CodeItem {
             CodeItem::RuleBlock(RuleBlock(
                 Id(name.to_string()),
                 FieldList(
                     args.iter()
-                        .map(|(t, n)| Field(Id(n.to_string()), t.clone()))
+                        .map(|(n, t)| Field(Id(n.to_string()), t.clone()))
                         .collect(),
                 ),
-                Fallback::Deny,
+                fallback,
                 Rules(rules),
             ))
+        }
+
+        pub fn apply(tags: Vec<&str>, condition: Condition) -> Rule {
+            Rule::Apply(IdList(tags.iter().map(|s| Id(s.to_string())).collect()), condition)
+        }
+        pub fn allow(condition: Condition) -> Rule {
+            Rule::Allow(condition)
+        }
+        pub fn deny(condition: Condition) -> Rule {
+            Rule::Deny(condition)
         }
     }
 
@@ -1084,18 +1162,19 @@ mod test {
         if case.should_pass {
             assert!(
                 result.is_ok(),
-                "{} should pass but failed with {:?}.",
+                "[{}] should pass but failed with {:?}.",
                 case.desc,
                 result
             );
         } else {
             match result {
-                Ok(res) => panic!("{} should fail but passed with {:?}", case.desc, res),
+                Ok(res) => panic!("[{}] should fail but passed with {:?}", case.desc, res),
                 Err(err) => {
                     assert!(
                         format!("{:?}", err).contains(&case.error_contains),
-                        "{} should fail but failed with {:?}.",
+                        "[{}] should fail with [{}] but failed with {:?}.",
                         case.desc,
+                        case.error_contains,
                         err
                     );
                 }
@@ -1111,19 +1190,522 @@ mod test {
     }
 
     #[test]
-    fn test_disjoint_idents() {
+    fn test_valid_idents() {
         test_cases(vec![
             TestCase::new_passing("Different tags", vec![mock::tag("a"), mock::tag("b")]),
+            TestCase::new_failing("Re-definition", vec![mock::tag("a"), mock::tag("a")], "already defined"),
             TestCase::new_passing(
                 "Different types",
                 vec![mock::tag("a"), mock::struct_def("b", v(), v())],
             ),
+            TestCase::new_passing("RuleBlock is action", vec![mock::action("a", v()), mock::rule_block("a", v(), deny!(), v())]),
+            TestCase::new_failing("RuleBlock is not action", vec![mock::rule_block("a", v(), deny!(), v())], "not a defined Action"),
             TestCase::new_failing(
-                "name collision",
+                "Name collision",
                 vec![mock::tag("a"), mock::struct_def("a", v(), v())],
                 "already defined",
             ),
-            TestCase::new_failing("", vec![mock::tag("a"), mock::tag("a")], ""),
         ]);
     }
+
+    #[test]
+    fn test_tag_group_members_exist() {
+        test_cases(vec![
+            TestCase::new_passing("Tag group members exist", vec![
+                mock::tag("a"),
+                mock::tag("b"),
+                mock::tag_group("group", vec!["a", "b"]),
+            ]),
+            TestCase::new_failing("Tag group members dont exist", vec![
+                mock::tag("b"),
+                mock::tag_group("group", vec!["a", "b"]),
+            ], "undefined"),
+        ]);
+    }
+    
+    #[test]
+    fn test_tag_group_not_cyclic() {
+        test_cases(vec![
+            TestCase::new_passing("Tag group no cycles", vec![
+                mock::tag("a"),
+                mock::tag("b"),
+                mock::tag("c"),
+                mock::tag("d"),
+                mock::tag_group("group1", vec!["a", "b"]),
+                mock::tag_group("group2", vec!["group1", "c"]),
+                mock::tag_group("group3", vec!["group1", "group2", "a", "d"]),
+            ]),
+            TestCase::new_failing("Tag group with cycles", vec![
+                mock::tag("a"),
+                mock::tag("b"),
+                mock::tag("c"),
+                mock::tag("d"),
+                mock::tag_group("group1", vec!["a", "b", "group3"]),
+                mock::tag_group("group2", vec!["group1", "c"]),
+                mock::tag_group("group3", vec!["group2", "a", "d"]),
+            ], "Cycle in tag groups"),
+        ]);
+    }
+    
+    #[test]
+    fn test_struct_tags_exist() {
+        test_cases(vec![
+            TestCase::new_passing("struct tags exist", vec![
+                mock::tag("a"),
+                mock::tag("b"),
+                mock::struct_def("This", vec!["a", "b"], v()),
+            ]),
+            TestCase::new_failing("struct tags dont exist", vec![
+                mock::tag("a"),
+                mock::struct_def("This", vec!["a", "b"], v()),
+            ], "undefined"),
+        ]);
+    }
+    
+    #[test]
+    fn test_struct_field_types_exist() {
+        test_cases(vec![
+            TestCase::new_passing("Struct field types exist", vec![
+                mock::struct_def("That", v(), v()),
+                mock::struct_def("This", v(), vec![
+                    ("a", struct_type!("That")),
+                    ("b", Type::Int),
+                ])
+            ]),
+            TestCase::new_failing("Struct field types dont exist", vec![
+                mock::struct_def("This", v(), vec![
+                    ("a", struct_type!("That")),
+                    ("b", Type::Int),
+                ])
+            ], "undefined"),
+        ]);
+    }
+
+    #[test]
+    fn test_struct_field_names_valid() {
+        test_cases(vec![
+            TestCase::new_passing("Struct field types exist", vec![
+                mock::struct_def("This", v(), vec![
+                    ("a", Type::Int),
+                    ("b", Type::Int),
+                ])
+            ]),
+            TestCase::new_failing("Struct field types exist", vec![
+                mock::struct_def("This", v(), vec![
+                    ("a", Type::Int),
+                    ("a", Type::Int),
+                ])
+            ], "already defined"),
+        ]);
+    }
+    
+    #[test]
+    fn test_structs_not_cyclic() {
+        test_cases(vec![
+            TestCase::new_passing("structs without cycle", vec![
+                mock::struct_def("Other", v(), v()),
+                mock::struct_def("That", v(), vec![
+                    ("a", struct_type!("Other")),
+                    ("b", Type::Int),
+                ]),
+                mock::struct_def("This", v(), vec![
+                    ("a", struct_type!("That")),
+                    ("b", struct_type!("Other")),
+                ]),
+            ]),
+            TestCase::new_failing("structs without cycle", vec![
+                mock::struct_def("Other", v(), vec![
+                    ("a", struct_type!("This")),
+                    ("b", Type::Int),
+                ]),
+                mock::struct_def("That", v(), vec![
+                    ("a", struct_type!("Other")),
+                    ("b", Type::Int),
+                ]),
+                mock::struct_def("This", v(), vec![
+                    ("a", struct_type!("That")),
+                    ("b", struct_type!("Other")),
+                ]),
+            ], "Cycle in struct field"),
+        ]);
+    }
+    
+    #[test]
+    fn test_action_arg_types_exist() {
+        test_cases(vec![
+            TestCase::new_passing("action arg types exist", vec![
+                mock::struct_def("This", v(), v()),
+                mock::action("read", vec![struct_type!("This")]),
+                mock::action("write", vec![Type::Int]),
+            ]),
+            TestCase::new_failing("action arg types dont exist", vec![
+                mock::action("read", vec![struct_type!("This")]),
+            ], "has argument of unknown type"),
+        ]);
+    }
+    
+    #[test]
+    fn test_action_group_members_exist() {
+        test_cases(vec![
+            TestCase::new_passing("action group members exist", vec![
+                mock::action("this", v()),
+                mock::action("that", v()),
+                mock::action("other", v()),
+                mock::action_group("group", vec!["this", "that", "other"])
+            ]),
+            TestCase::new_failing("action group members dont exist", vec![
+                mock::action("this", v()),
+                mock::action("other", v()),
+                mock::action_group("group", vec!["this", "that", "other"])
+            ], "undefined"),
+        ]);
+    }
+    
+    #[test]
+    fn test_action_group_not_cyclic() {
+        test_cases(vec![
+            TestCase::new_passing("Action group no cycles", vec![
+                mock::action("a", v()),
+                mock::action("b", v()),
+                mock::action("c", v()),
+                mock::action("d", v()),
+                mock::action_group("group1", vec!["a", "b"]),
+                mock::action_group("group2", vec!["group1", "c"]),
+                mock::action_group("group3", vec!["group1", "group2", "a", "d"]),
+            ]),
+            TestCase::new_failing("Action group with cycles", vec![
+                mock::action("a", v()),
+                mock::action("b", v()),
+                mock::action("c", v()),
+                mock::action("d", v()),
+                mock::action_group("group1", vec!["a", "b", "group3"]),
+                mock::action_group("group2", vec!["group1", "c"]),
+                mock::action_group("group3", vec!["group2", "a", "d"]),
+            ], "Cycle in action groups"),
+        ]);
+    }
+    
+    #[test]
+    fn test_action_group_member_signature() {
+        test_cases(vec![
+            TestCase::new_passing("Action group empty args", vec![
+                mock::action("a", v()),
+                mock::action("b", v()),
+                mock::action_group("group1", vec!["a", "b"]),
+            ]),
+            TestCase::new_passing("Action group matching args", vec![
+                mock::struct_def("This", v(), v()),
+                mock::action("a", vec![Type::Int, struct_type!("This")]),
+                mock::action("b", vec![Type::Int, struct_type!("This")]),
+                mock::action("c", vec![Type::Int, struct_type!("This")]),
+                mock::action_group("group1", vec!["a", "b"]),
+                mock::action_group("group2", vec!["group1", "c"]),
+            ]),
+            TestCase::new_failing("Action group non matching members", vec![
+                mock::action("a", v()),
+                mock::action("b", vec![Type::Int]),
+                mock::action_group("group1", vec!["a", "b"]),
+            ], "must share the same argument signature"),
+            TestCase::new_failing("Action group non matching members (nested)", vec![
+                mock::action("a", v()),
+                mock::action("b", vec![Type::Int]),
+                mock::action("c", v()),
+                mock::action_group("group1", vec!["a", "c"]),
+                mock::action_group("group2", vec!["group1", "b"]),
+            ], "must share the same argument signature"),
+        ]);
+    }
+    
+    #[test]
+    fn test_rule_block_action_exists() {
+        test_cases(vec![
+            TestCase::new_passing("valid rule block", vec![
+                mock::action("this", v()),
+                mock::rule_block("this", v(), deny!(), v()),
+            ]),
+            TestCase::new_failing("rule block name is not action", vec![
+                mock::tag("this"),
+                mock::rule_block("this", v(), deny!(), v()),
+            ], "not Action or ActionGroup"),
+            TestCase::new_failing("rule block redefined", vec![
+                mock::action("this", v()),
+                mock::rule_block("this", v(), deny!(), v()),
+                mock::rule_block("this", v(), deny!(), v()),
+            ], "multiple times"),
+        ]);
+    }
+
+    #[test]
+    fn test_rule_block_signature_exists() {
+        test_cases(vec![
+            TestCase::new_passing("rule block signature empty", vec![
+                mock::action("this", v()),
+                mock::rule_block("this", v(), deny!(), v()),
+            ]),
+            TestCase::new_passing("rule block signature exists", vec![
+                mock::action("this", vec![Type::Int]),
+                mock::rule_block("this", vec![("a", Type::Int)], deny!(), v()),
+            ]),
+            TestCase::new_passing("rule block signature exists as action group", vec![
+                mock::action("this", vec![Type::Int]),
+                mock::action_group("group", vec!["this"]),
+                mock::rule_block("group", vec![("a", Type::Int)], deny!(), v()),
+            ]),
+            TestCase::new_failing("rule block signature does not exist", vec![
+                mock::action("this", v()),
+                mock::rule_block("this", vec![("a", Type::Int)], deny!(), v()),
+            ], "incorrect argument types"),
+            TestCase::new_failing("rule block signature exists as action group", vec![
+                mock::action("this", vec![Type::String]),
+                mock::action_group("group", vec!["this"]),
+                mock::rule_block("group", vec![("a", Type::Int)], deny!(), v()),
+            ], "incorrect argument types"),
+        ]);
+    }
+
+    #[test]
+    fn test_rule_block_arg_names_unique() {
+        test_cases(vec![
+            TestCase::new_passing("rule block signature empty", vec![
+                mock::action("this", vec![Type::Int, Type::String]),
+                mock::rule_block("this", vec![("a", Type::Int), ("b", Type::String)], deny!(), v()),
+            ]),
+            TestCase::new_failing("rule block signature exists", vec![
+                mock::action("this", vec![Type::Int, Type::String]),
+                mock::rule_block("this", vec![("a", Type::Int), ("a", Type::String)], deny!(), v()),
+            ], "defined multiple times"),
+        ]);
+    }
+    
+    #[test]
+    fn test_rule_block_fallback_conflict() {
+        test_cases(vec![
+            TestCase::new_passing("rule block fallback matches", vec![
+                mock::action("this", v()),
+                mock::action("that", v()),
+                mock::action_group("group", vec!["this", "that"]),
+                mock::rule_block("this", v(), deny!(), v()),
+                mock::rule_block("group", v(), deny!(), v()),
+            ]),
+            TestCase::new_failing("rule block fallback does not match", vec![
+                mock::action("this", v()),
+                mock::action("that", v()),
+                mock::action_group("group", vec!["this", "that"]),
+                mock::rule_block("this", v(), allow!(), v()),
+                mock::rule_block("that", v(), deny!(), v()),
+                mock::rule_block("group", v(), deny!(), v()),
+            ], "conflicts with"),
+        ]);
+    }
+    
+    #[test]
+    fn test_apply_tags_exist() {
+        test_cases(vec![
+            TestCase::new_passing("Apply tags exist", vec![
+                mock::tag("a"),
+                mock::action("this", v()),
+                mock::rule_block("this", v(), deny!(), vec![mock::apply(vec!["a"], always!())]),
+            ]),
+            TestCase::new_failing("Apply tags dont exist", vec![
+                mock::action("this", v()),
+                mock::rule_block("this", v(), deny!(), vec![mock::apply(vec!["a"], always!())]),
+            ], "undefined"),
+        ]);
+    }
+    
+    #[test]
+    fn test_rule_condition_action_exists_with_rule_block() {
+        test_cases(vec![
+            TestCase::new_passing("Rule condition action exists and has rule block", vec![
+                mock::action("this", v()),
+                mock::action("other", v()),
+                mock::rule_block("this", v(), deny!(), vec![mock::allow(when!(rule!("other", v())))]),
+                mock::rule_block("other", v(), deny!(), v()),
+            ]),
+            TestCase::new_failing("Rule condition action doesnt exist", vec![
+                mock::action("this", v()),
+                mock::rule_block("this", v(), deny!(), vec![mock::allow(when!(rule!("other", v())))]),
+            ], "not defined"),
+            TestCase::new_failing("Rule condition action exists but has no rule block", vec![
+                mock::action("this", v()),
+                mock::action("other", v()),
+                mock::rule_block("this", v(), deny!(), vec![mock::allow(when!(rule!("other", v())))]),
+            ], "no defined RuleBlock"),
+        ]);
+    }
+    
+    #[test]
+    fn test_rule_condition_args_valid() {
+        test_cases(vec![
+            TestCase::new_passing("rule condition arg types match", vec![
+                mock::struct_def("This", v(), vec![("b", struct_type!("That"))]),
+                mock::struct_def("That", v(), v()),
+                mock::action("this", vec![struct_type!("This")]),
+                mock::action("other", vec![Type::Int, struct_type!("That")]),
+                mock::rule_block("this", vec![("a", struct_type!("This"))], deny!(), vec![mock::allow(when!(rule!("other", vec![num!(5), field!("a"."b")])))]),
+                mock::rule_block("other", vec![("a", Type::Int), ("b", struct_type!("That"))], deny!(), v()),
+            ]),
+            TestCase::new_failing("rule condition arg types dont match", vec![
+                mock::struct_def("This", v(), vec![("b", struct_type!("That"))]),
+                mock::struct_def("That", v(), v()),
+                mock::action("this", vec![struct_type!("This")]),
+                mock::action("other", vec![Type::Int, struct_type!("This")]),
+                mock::rule_block("other", vec![("a", Type::Int), ("b", struct_type!("This"))], deny!(), v()),
+                mock::rule_block("this", vec![("a", struct_type!("This"))], deny!(), vec![mock::allow(when!(rule!("other", vec![num!(5), field!("a"."b")])))]),
+            ], "takes args of type"),
+        ]);
+    }
+    
+    #[test]
+    fn test_inequality_types_valid() {
+        test_cases(vec![
+            TestCase::new_passing("inequality types are ints", vec![
+                mock::action("this", vec![Type::Int]),
+                mock::rule_block("this", vec![("a", Type::Int)], deny!(), vec![mock::allow(when!(gte!(num!(5), field!("a"))))])
+            ]),
+            TestCase::new_failing("inequality types are not ints", vec![
+                mock::action("this", vec![Type::Int]),
+                mock::rule_block("this", vec![("a", Type::Int)], deny!(), vec![mock::allow(when!(lt!(string!("this"), field!("a"))))])
+            ], "must be int"),
+        ]);
+    }
+    
+    #[test]
+    fn test_equalilty_types_match() {
+        test_cases(vec![
+            TestCase::new_passing("equality types are both ints", vec![
+                mock::action("this", vec![Type::Int]),
+                mock::rule_block("this", vec![("a", Type::Int)], deny!(), vec![mock::allow(when!(eq!(num!(5), field!("a"))))])
+            ]),
+            TestCase::new_failing("equality types dont match", vec![
+                mock::action("this", vec![Type::Int]),
+                mock::rule_block("this", vec![("a", Type::Int)], deny!(), vec![mock::allow(when!(eq!(string!("this"), field!("a"))))])
+            ], "must be the same type"),
+        ]);
+    }
+    
+    #[test]
+    fn test_match_condition_types() {
+        test_cases(vec![
+            TestCase::new_passing("match types are correct", vec![
+                mock::action("this", vec![Type::Int]),
+                mock::rule_block("this", vec![("a", Type::Int)], deny!(), vec![mock::allow(when!(match_!(string!("wow"), regex!("a"))))])
+            ]),
+            TestCase::new_failing("match on int", vec![
+                mock::action("this", vec![Type::Int]),
+                mock::rule_block("this", vec![("a", Type::Int)], deny!(), vec![mock::allow(when!(match_!(num!(5), regex!("a"))))])
+            ], "must be string"),
+            TestCase::new_failing("match to string", vec![
+                mock::action("this", vec![Type::Int]),
+                mock::rule_block("this", vec![("a", Type::Int)], deny!(), vec![mock::allow(when!(match_!(string!("hey"), string!("a"))))])
+            ], "must be regex"),
+        ]);
+    }
+    
+    #[test]
+    fn test_contains_condition_types() {
+        test_cases(vec![
+            TestCase::new_passing("contains condition on TagList", vec![
+                mock::tag("a"),
+                mock::action("this", v()),
+                mock::rule_block("this", v(), deny!(), vec![mock::allow(when!(contains!(any_arg!(), "a")))])
+            ]),
+            TestCase::new_passing("contains condition on struct", vec![
+                mock::tag("a"),
+                mock::struct_def("That", v(), v()),
+                mock::action("this", vec![struct_type!("That")]),
+                mock::rule_block("this", vec![("b", struct_type!("That"))], deny!(), vec![mock::allow(when!(contains!(field!("b"), "a")))])
+            ]),
+            TestCase::new_failing("contains condition with tag group", vec![
+                mock::tag("a"),
+                mock::tag_group("group", vec!["a"]),
+                mock::action("this", v()),
+                mock::rule_block("this", v(), deny!(), vec![mock::allow(when!(contains!(any_arg!(), "group")))])
+            ], "tag groups are not valid here"),
+            TestCase::new_failing("contains condition on int", vec![
+                mock::tag("a"),
+                mock::struct_def("That", v(), v()),
+                mock::action("this", vec![Type::Int]),
+                mock::rule_block("this", vec![("b", Type::Int)], deny!(), vec![mock::allow(when!(contains!(field!("b"), "a")))])
+            ], "must be any_arg, every_arg or a struct"),
+        ]);
+    }
+    
+    #[test]
+    fn test_contains_condition_tags_exist() {
+        test_cases(vec![
+            TestCase::new_passing("contains a tag that exists", vec![
+                mock::tag("a"),
+                mock::action("this", v()),
+                mock::rule_block("this", v(), deny!(), vec![mock::allow(when!(contains!(any_arg!(), "a")))])
+            ]),
+            TestCase::new_passing("contains_any tag that all exist", vec![
+                mock::tag("a"),
+                mock::tag("b"),
+                mock::tag("c"),
+                mock::tag_group("group", vec!["a", "b"]),
+                mock::action("this", v()),
+                mock::rule_block("this", v(), deny!(), vec![mock::allow(when!(contains_any!(any_arg!(), ["group", "c"])))])
+            ]),
+            TestCase::new_failing("lacks a tag that doesnt exists", vec![
+                mock::action("this", v()),
+                mock::rule_block("this", v(), deny!(), vec![mock::allow(when!(lacks!(any_arg!(), "a")))])
+            ], "undefined tag"),
+            TestCase::new_failing("lacks_any tag that dont all exist", vec![
+                mock::tag("a"),
+                mock::tag("b"),
+                mock::tag_group("group", vec!["a", "b"]),
+                mock::action("this", v()),
+                mock::rule_block("this", v(), deny!(), vec![mock::allow(when!(lacks_any!(any_arg!(), ["group", "c"])))])
+            ], "undefined tag"),
+        ]);
+    }
+    
+    #[test]
+    fn test_math_expr_types() {
+        test_cases(vec![
+            TestCase::new_passing("Math expr of ints", vec![
+                mock::action("this", vec![Type::Int]),
+                mock::rule_block("this", vec![("a", Type::Int)], deny!(), vec![mock::allow(when!(
+                    gt!(
+                        mul!(neg!(add!(num!(1), num!(3))), div!(num!(4), field!("a"))),
+                        num!(3)
+                    )
+                ))])
+            ]),
+            TestCase::new_failing("Math expr with string", vec![
+                mock::action("this", vec![Type::String]),
+                mock::rule_block("this", vec![("a", Type::String)], deny!(), vec![mock::allow(when!(
+                    gt!(
+                        mul!(neg!(add!(num!(1), num!(3))), div!(num!(4), field!("a"))),
+                        num!(3)
+                    )
+                ))])
+            ], "must be int"),
+        ]);
+    }
+    
+    #[test]
+    fn test_field_types() {
+        test_cases(vec![
+            TestCase::new_passing("Field exists level 1", vec![
+                mock::action("this", vec![Type::Int]),
+                mock::rule_block("this", vec![("a", Type::Int)], deny!(), vec![mock::allow(when!(eq!(field!("a"), num!(5))))])
+            ]),
+            TestCase::new_passing("Field exists level 2", vec![
+                mock::struct_def("This", v(), vec![("b", Type::Int)]),
+                mock::action("this", vec![struct_type!("This")]),
+                mock::rule_block("this", vec![("a", struct_type!("This"))], deny!(), vec![mock::allow(when!(eq!(field!("a"."b"), num!(5))))])
+            ]),
+            TestCase::new_failing("Field doesnt exist level 1", vec![
+                mock::action("this", vec![Type::Int]),
+                mock::rule_block("this", vec![("c", Type::Int)], deny!(), vec![mock::allow(when!(eq!(field!("a"), num!(5))))])
+            ], "not defined"),
+            TestCase::new_failing("Field doesnt exist level 2", vec![
+                mock::struct_def("This", v(), vec![("c", Type::Int)]),
+                mock::action("this", vec![struct_type!("This")]),
+                mock::rule_block("this", vec![("a", struct_type!("This"))], deny!(), vec![mock::allow(when!(eq!(field!("a"."b"), num!(5))))])
+            ], "No field"),
+        ]);
+    } 
 }
