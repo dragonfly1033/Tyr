@@ -37,11 +37,12 @@ fn emit_fallback(fallback: &Fallback) -> TokenStream {
 
 fn emit_boilerplate() -> TokenStream {
     quote! {
-        use std::hash::Hash;
         use std::sync::LazyLock;
+        use regex::Regex;
 
         const STATIC_REGEX_COMPILE_ERROR: &'static str = "Valid regex from transpilation";
 
+        #[derive(Debug)]
         pub enum PolicyDecision {
             Allow,
             Deny,
@@ -342,9 +343,11 @@ fn emit_struct(s: &Struct) -> TokenStream {
             tags: TagSet,
         }
         impl #name {
-            pub fn new(#fields, tags: impl Into<TagSet>) -> Self {
+            pub fn new(#fields, tags: Option<TagSet>) -> Self {
                 let mut preset = TagSet::new_with(vec![#tags]);
-                preset.union(&tags.into());
+                if let Some(tags) = tags {
+                    preset.union(&tags)
+                };
                 Self {
                     #(#field_names: #field_names),*,
                     tags: preset
@@ -386,7 +389,7 @@ fn emit_function(action: &ActionRules) -> TokenStream {
             let cond = emit_condition(cond);
             quote! {
                 if #cond {
-                    to_add.union(vec![#tags]);
+                    to_add.append(&mut vec![#tags]);
                 }
             }
         })
@@ -403,7 +406,7 @@ fn emit_function(action: &ActionRules) -> TokenStream {
             }
         }
         pub fn #after_name() -> Vec<Tag> {
-            let to_add: Vec<Tag> = Vec::new();
+            let mut to_add: Vec<Tag> = Vec::new();
             #(#applications)*
             to_add
         }
