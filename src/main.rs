@@ -1,11 +1,8 @@
 use lalrpop_util::lalrpop_mod;
 use proc_macro2::TokenStream;
 use regex;
-use std::env;
-use std::fs;
-use std::io;
-use std::path::Path;
-use std::process;
+use structopt::StructOpt;
+use std::{fs,io,path::{Path,PathBuf}};
 
 use crate::ast::Code;
 
@@ -21,6 +18,19 @@ mod collect;
 mod emit;
 mod gen_ir;
 mod ir;
+
+#[derive(Debug, StructOpt)]
+struct Opt {    
+    #[structopt(short, long, parse(from_os_str))]
+    file: PathBuf,
+    
+    #[structopt(short, long, parse(from_os_str), default_value = ".")]
+    parent: PathBuf,
+
+    #[structopt(long, default_value = "policies")]
+    name: String,
+}
+
 
 #[derive(Debug)]
 pub enum CompilerError {
@@ -77,12 +87,12 @@ fn compile(file_input: String) -> TokenStream {
     emit::emit_code(ir_ast)
 }
 
-fn save_as_crate(code: TokenStream, parent: &str, crate_name: &str) -> Result<(), CompilerError> {
+fn save_as_crate(code: TokenStream, parent: PathBuf, crate_name: &str) -> Result<(), CompilerError> {
     let val = prettyplease::unparse(
         &syn::parse_file(&code.to_string()).map_err(|e| CompilerError::Formatting(e))?,
     );
-    let dir_name = format!("{parent}/{crate_name}");
-    let crate_dir = Path::new(&dir_name);
+
+    let crate_dir = parent.join(Path::new(crate_name));
     let src_dir = crate_dir.join(Path::new("src"));
 
     fs::create_dir_all(&src_dir).map_err(|e| CompilerError::Io(e))?;
@@ -110,44 +120,21 @@ regex = "1.12.2"
 }
 
 fn main() {
-    // Collect command-line arguments
-    let args: Vec<String> = env::args().collect();
-
-    // Expect exactly 3 arguments: 
-    // - the tyr filename 
-    // - parent dir
-    // - crate_name
-    if args.len() != 4 {
-        usage();
-        process::exit(1);
-    }
-
-    let filename = &args[1];
-    let parent = &args[2];
-    let crate_name = &args[3];
+    let options = Opt::from_args();
 
     // Read the file contents
-    let contents = fs::read_to_string(filename)
+    let contents = fs::read_to_string(options.file.clone())
         .inspect_err(|e| {
-            exit_err(format!("Error reading '{filename}': {e:?}"));
+            panic!("Error reading '{:?}': {e:?}", options.file);
         })
         .unwrap();
 
     let tokens = compile(contents);
 
-    save_as_crate(tokens, parent.as_str(), crate_name.as_str()).inspect_err(|e| {
-        panic!("Error saving '{crate_name}': {e:?}");
+    save_as_crate(tokens, options.parent, options.name.as_str()).inspect_err(|e| {
+        panic!("Error saving '{}': {e:?}", options.name);
     })
     .unwrap();
-}
-
-fn usage() {
-    eprintln!("Usage: tyrc <tyr file> <output dir> <crate name>");
-}
-
-fn exit_err(msg: String) {
-    eprintln!("{msg}");
-    process::exit(1);
 }
 
 #[cfg(test)]

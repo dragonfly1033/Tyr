@@ -4,7 +4,7 @@ build:
 
 .PHONY: test
 test: build
-	./run_integration_test.sh
+	./run_integration_tests.sh
 
 .PHONY: coverage
 coverage:

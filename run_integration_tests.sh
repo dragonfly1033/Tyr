@@ -16,7 +16,7 @@ for t in $(find "$test_dir" -maxdepth 1 -mindepth 1 -type d -exec basename {} \;
     tmp=$(mktemp --suffix=""_tyr)
 
     printf "%s .... " "$t"
-    "$compile" "$test_dir/$t/policies.tyr" "$out_dir" policies
+    "$compile" --file "$test_dir/$t/policies.tyr" --parent "$out_dir" --name policies
     cp "$test_dir/$t/main.rs" "$out_dir/src"
     cd "$out_dir" || exit 1
     if cargo test --color=always -- --color=always &> "$tmp"; then
