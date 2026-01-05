@@ -1,8 +1,11 @@
 use lalrpop_util::lalrpop_mod;
 use proc_macro2::TokenStream;
 use regex;
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
 use structopt::StructOpt;
-use std::{fs,io,path::{Path,PathBuf}};
 
 use crate::ast::Code;
 
@@ -20,17 +23,16 @@ mod gen_ir;
 mod ir;
 
 #[derive(Debug, StructOpt)]
-struct Opt {    
+struct Opt {
     #[structopt(short, long, parse(from_os_str))]
     file: PathBuf,
-    
+
     #[structopt(short, long, parse(from_os_str), default_value = ".")]
     parent: PathBuf,
 
     #[structopt(long, default_value = "policies")]
     name: String,
 }
-
 
 #[derive(Debug)]
 pub enum CompilerError {
@@ -87,7 +89,11 @@ fn compile(file_input: String) -> TokenStream {
     emit::emit_code(ir_ast)
 }
 
-fn save_as_crate(code: TokenStream, parent: PathBuf, crate_name: &str) -> Result<(), CompilerError> {
+fn save_as_crate(
+    code: TokenStream,
+    parent: PathBuf,
+    crate_name: &str,
+) -> Result<(), CompilerError> {
     let val = prettyplease::unparse(
         &syn::parse_file(&code.to_string()).map_err(|e| CompilerError::Formatting(e))?,
     );
@@ -131,10 +137,11 @@ fn main() {
 
     let tokens = compile(contents);
 
-    save_as_crate(tokens, options.parent, options.name.as_str()).inspect_err(|e| {
-        panic!("Error saving '{}': {e:?}", options.name);
-    })
-    .unwrap();
+    save_as_crate(tokens, options.parent, options.name.as_str())
+        .inspect_err(|e| {
+            panic!("Error saving '{}': {e:?}", options.name);
+        })
+        .unwrap();
 }
 
 #[cfg(test)]

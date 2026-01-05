@@ -386,7 +386,6 @@ fn compile_tag_expr(expr: &ast::Expr, args: &Vec<ir::Id>) -> ir::TagExpr {
     match expr {
         ast::Expr::AnyArg => ir::TagExpr::Any(args.clone()),
         ast::Expr::EveryArg => ir::TagExpr::Every(args.clone()),
-        // We know this is a Struct type because of type checking
         ast::Expr::Field(f) => ir::TagExpr::Field(f.clone()),
         ast::Expr::Regex(_)
         | ast::Expr::String(_)
