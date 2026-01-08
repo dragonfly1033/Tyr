@@ -11,7 +11,7 @@ pub struct Tag(pub String);
 pub struct TagList(pub Vec<Tag>);
 
 #[allow(unused)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StructName(pub String);
 
 #[allow(unused)]

@@ -19,3 +19,4 @@ proc-macro2 = "1.0.103"
 syn = "2.0.111"
 prettyplease = "0.2.37"
 structopt = "0.3"
+z3 = { version = "0.19.7", features = ["gh-release"] }

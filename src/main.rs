@@ -21,17 +21,38 @@ mod collect;
 mod emit;
 mod gen_ir;
 mod ir;
+mod coverage;
 
 #[derive(Debug, StructOpt)]
-struct Opt {
-    #[structopt(short, long, parse(from_os_str))]
-    file: PathBuf,
+enum Opt {
+    /// Compile a .tyr policy file into a Rust crate
+    Compile {
+        // tyr source file.
+        #[structopt(short, long, parse(from_os_str))]
+        file: PathBuf,
 
-    #[structopt(short, long, parse(from_os_str), default_value = ".")]
-    parent: PathBuf,
+        // parent directory in which to output generated crate.
+        #[structopt(short, long, parse(from_os_str), default_value = ".")]
+        parent: PathBuf,
 
-    #[structopt(long, default_value = "policies")]
-    name: String,
+        // name of generated crate.
+        #[structopt(long, default_value = "policies")]
+        name: String,
+    },
+    /// Analyse coverage of a policy set, optionally comparing two
+    Coverage {
+        // file A. Generates coverage report when used alone.
+        #[structopt(short, long, parse(from_os_str))]
+        file: PathBuf,
+
+        // file B. Generates a comparison report with file A. 
+        #[structopt(long, parse(from_os_str))]
+        compare: Option<PathBuf>,
+
+        /// Solver timeout in milliseconds
+        #[structopt(long, default_value = "5000")]
+        timeout: u32,
+    },
 }
 
 #[derive(Debug)]
@@ -61,7 +82,7 @@ fn pre_process(dirty_input: String) -> String {
     clean_input
 }
 
-fn compile(file_input: String) -> TokenStream {
+fn compile_to_ir(file_input: String) -> ir::Code {
     let cleaned_input = pre_process(file_input);
 
     let code_parser = grammar::CodeParser::new();
@@ -84,8 +105,11 @@ fn compile(file_input: String) -> TokenStream {
         })
         .unwrap();
 
-    let ir_ast = gen_ir::compile_ir(&collected_code, generation_context);
+    gen_ir::compile_ir(&collected_code, generation_context)
+}
 
+fn compile(file_input: String) -> TokenStream {
+    let ir_ast = compile_to_ir(file_input);
     emit::emit_code(ir_ast)
 }
 
@@ -125,23 +149,45 @@ regex = "1.12.2"
     )
 }
 
+
+fn read_file(path: &PathBuf) -> String {
+    fs::read_to_string(path)
+        .inspect_err(|e| {
+            panic!("Error reading '{:?}': {e:?}", path);
+        })
+        .unwrap()
+}
+
 fn main() {
-    let options = Opt::from_args();
+    match Opt::from_args() {
+        Opt::Compile { file, parent, name } => {
+            let contents = read_file(&file);
+            let tokens = compile(contents);
 
-    // Read the file contents
-    let contents = fs::read_to_string(options.file.clone())
-        .inspect_err(|e| {
-            panic!("Error reading '{:?}': {e:?}", options.file);
-        })
-        .unwrap();
+            save_as_crate(tokens, parent, name.as_str())
+                .inspect_err(|e| {
+                    panic!("Error saving '{}': {e:?}", name);
+                })
+                .unwrap();
+        }
+        Opt::Coverage { file, compare: compare_path, timeout } => {
+            let contents = read_file(&file);
+            let ir = compile_to_ir(contents);
 
-    let tokens = compile(contents);
-
-    save_as_crate(tokens, options.parent, options.name.as_str())
-        .inspect_err(|e| {
-            panic!("Error saving '{}': {e:?}", options.name);
-        })
-        .unwrap();
+            if let Some(compare_path) = compare_path {
+                let other_contents = read_file(&compare_path);
+                let other_ir = compile_to_ir(other_contents);
+                let result = coverage::compare(&ir, &other_ir, timeout);
+                println!("{result}");
+            } else {
+                let reports = coverage::describe_coverage(&ir, timeout);
+                for report in reports {
+                    println!("{report}");
+                    println!();
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
