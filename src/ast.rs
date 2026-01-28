@@ -87,7 +87,7 @@ pub struct Struct(pub TitleId, pub IdList, pub FieldList);
 
 #[allow(unused)]
 #[derive(Debug, PartialEq)]
-pub struct Action(pub Id, pub TypeList);
+pub struct Action(pub Id, pub TypeList, pub Type, pub Fallback);
 #[allow(unused)]
 #[derive(Debug, PartialEq)]
 pub struct ActionG(pub Id, pub IdList);
@@ -111,7 +111,7 @@ pub enum Rule {
 pub struct Rules(pub Vec<Rule>);
 #[allow(unused)]
 #[derive(Debug, PartialEq)]
-pub struct RuleBlock(pub Id, pub FieldList, pub Fallback, pub Rules);
+pub struct RuleBlock(pub Id, pub FieldList, pub Rules);
 
 #[allow(unused)]
 #[derive(Debug, PartialEq)]
@@ -646,18 +646,25 @@ mod test {
         };
 
         test_valid_word(
-            "action this(str, int)",
+            "action this(str, int) -> That fallback deny",
             Action(
                 Id(String::from("this")),
                 TypeList(vec![Type::String, Type::Int]),
+                Type::Struct(TitleId(String::from("That"))),
+                Fallback::Deny,
             ),
         );
         test_valid_word(
-            "action this()",
-            Action(Id(String::from("this")), TypeList(Vec::new())),
+            "action this() -> That fallback deny",
+            Action(
+                Id(String::from("this")), 
+                TypeList(Vec::new()),
+                Type::Struct(TitleId(String::from("That"))),
+                Fallback::Deny,
+            ),
         );
         test_valid_word(
-            "action this(bool,This,str)",
+            "action this(bool,This,str) -> That fallback deny",
             Action(
                 Id(String::from("this")),
                 TypeList(vec![
@@ -665,12 +672,18 @@ mod test {
                     Type::Struct(TitleId(String::from("This"))),
                     Type::String,
                 ]),
+                Type::Struct(TitleId(String::from("That"))),
+                Fallback::Deny,
             ),
         );
         test_invalid_word("acton this()");
         test_invalid_word("action This(that)");
         test_invalid_word("action wow(wrong,bool)");
         test_invalid_word("action wow(bool);");
+        test_invalid_word("action this(str, int)");
+        test_invalid_word("action this(str, int) -> That");
+        test_invalid_word("action this(str, int) ->");
+        test_invalid_word("action this(str, int) fallback deny");
         test_invalid_word("");
     }
 
@@ -1213,12 +1226,11 @@ mod test {
             );
         };
 
-        test_valid_word("rules name(this: str, that: int, other: Wow) fallback deny { allow always; deny never; }", 
+        test_valid_word("rules name(this: str, that: int, other: Wow) { allow always; deny never; }", 
             RuleBlock(
                 Id(String::from("name")), 
                 args_parser.parse("this: str, that: int, other:Wow")
                                 .expect("Failed to parse FieldList in test."), 
-                Fallback::Deny, 
                 Rules(vec![
                     Rule::Allow(Condition::Always),
                     Rule::Deny(Condition::Never),
@@ -1226,17 +1238,16 @@ mod test {
             )
         );
         test_valid_word(
-            "rules name() fallback deny {}",
+            "rules name() {}",
             RuleBlock(
                 Id(String::from("name")),
                 FieldList(Vec::new()),
-                Fallback::Deny,
                 Rules(vec![]),
             ),
         );
 
         test_invalid_word("");
-        test_invalid_word("rules name(,) fallback deny {;}");
+        test_invalid_word("rules name(,) {;}");
     }
 
     #[test]
@@ -1294,10 +1305,10 @@ mod test {
             ),
         );
         test_valid_word(
-            "action this();",
+            "action this() -> This fallback deny;",
             CodeItem::Action(
                 action_parser
-                    .parse("action this()")
+                    .parse("action this() -> This fallback deny")
                     .expect("Failed to parse Action in test."),
             ),
         );
@@ -1310,20 +1321,20 @@ mod test {
             ),
         );
         test_valid_word(
-            "rules name() fallback deny {};",
+            "rules name() {};",
             CodeItem::RuleBlock(
                 rule_block_parser
-                    .parse("rules name() fallback deny {}")
+                    .parse("rules name() {}")
                     .expect("Failed to parse RuleBlock in test."),
             ),
         );
 
         test_invalid_word("tag this");
         test_invalid_word("taggroup this = that,other");
-        test_invalid_word("action this()");
+        test_invalid_word("action this() -> This fallback deny");
         test_invalid_word("actiongroup this = that,other");
         test_invalid_word("struct This [] {}");
-        test_invalid_word("rules this() fallback deny {}");
+        test_invalid_word("rules this() {}");
         test_invalid_word("");
     }
 }

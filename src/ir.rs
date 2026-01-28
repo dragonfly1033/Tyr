@@ -1,4 +1,4 @@
-use crate::ast::{Fallback, FieldList, FieldValue};
+use crate::ast::{Fallback, FieldList, FieldValue, Type};
 
 #[allow(unused)]
 #[derive(Debug, Clone)]
@@ -39,6 +39,7 @@ pub type DenyCondition = Condition;
 pub struct ActionRules(
     pub ActionName,
     pub FieldList,
+    pub Type,
     pub Fallback,
     pub AllowCondition,
     pub DenyCondition,

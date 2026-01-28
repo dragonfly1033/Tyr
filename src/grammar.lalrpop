@@ -60,18 +60,17 @@ pub Struct: Struct = {
     }
 }
 
-
-pub Action: Action = {
-    "action" <i:Id> "(" <t:TypeList?> ")" => Action(i, t.unwrap_or(TypeList(Vec::new()))),
-};
-pub ActionG: ActionG = {
-    "actiongroup" <i:Id> "=" <l:IdList> => ActionG(i, l),
-};
-
 pub Fallback: Fallback = {
     "allow" => Fallback::Allow,
     "deny" => Fallback::Deny,
     "warn" => Fallback::Warn,
+};
+
+pub Action: Action = {
+    "action" <i:Id> "(" <t:TypeList?> ")" "->" <r:TitleId> "fallback" <f:Fallback> => Action(i, t.unwrap_or(TypeList(Vec::new())), Type::Struct(r), f),
+};
+pub ActionG: ActionG = {
+    "actiongroup" <i:Id> "=" <l:IdList> => ActionG(i, l),
 };
 
 pub Rule: Rule = {
@@ -83,8 +82,8 @@ Rules: Rules = {
     <v:Rule*> => Rules(v),
 };
 pub RuleBlock: RuleBlock = {
-    "rules" <i:Id> "(" <a:FieldList?> ")" "fallback" <f:Fallback> "{" <r:Rules> "}" => {
-        RuleBlock(i, a.unwrap_or(FieldList(Vec::new())), f, r)
+    "rules" <i:Id> "(" <a:FieldList?> ")" "{" <r:Rules> "}" => {
+        RuleBlock(i, a.unwrap_or(FieldList(Vec::new())), r)
     },
 };
 

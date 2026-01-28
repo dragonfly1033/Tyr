@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    ast::{self, Fallback, FieldList},
+    ast::{self, Fallback, FieldList, Type},
     check::GenerationContext,
     collect::CollectedCode,
     ir,
@@ -82,6 +82,7 @@ fn compile_actions(
         String,
         (
             FieldList,
+            Type,
             Fallback,
             Vec<ir::Condition>,
             Vec<ir::Condition>,
@@ -89,7 +90,7 @@ fn compile_actions(
         ),
     > = HashMap::new();
 
-    for ast::RuleBlock(ast::Id(name), fields, fallback, ast::Rules(rules)) in blocks {
+    for ast::RuleBlock(ast::Id(name), fields, ast::Rules(rules)) in blocks {
         let args = collect_arg_names(fields);
 
         let (allow_cond, deny_cond, appls, mut regs, mut tags) = compile_rules(&rules, &args, ctx);
@@ -99,7 +100,7 @@ fn compile_actions(
 
         if let Some(actions) = ctx.action_mappings.get(name) {
             for action in actions {
-                if let Some((_, _, allows, denys, applications)) = action_rules_info.get_mut(action)
+                if let Some((_, _, _, allows, denys, applications)) = action_rules_info.get_mut(action)
                 {
                     allows.push(allow_cond.clone());
                     denys.push(deny_cond.clone());
@@ -109,7 +110,8 @@ fn compile_actions(
                         action.clone(),
                         (
                             fields.clone(),
-                            fallback.clone(),
+                            ctx.action_return.get(action).expect("Action {action} should have a known return value").clone(),
+                            ctx.action_fallback.get(action).expect("Action {action} should have a known fallback value").clone(),
                             vec![allow_cond.clone()],
                             vec![deny_cond.clone()],
                             appls.clone(),
@@ -122,10 +124,11 @@ fn compile_actions(
 
     let mut action_rules: Vec<ir::ActionRules> = Vec::new();
 
-    for (name, (fields, fallback, allows, denys, applications)) in action_rules_info {
+    for (name, (fields, ret, fallback, allows, denys, applications)) in action_rules_info {
         action_rules.push(ir::ActionRules(
             ir::ActionName(name),
             fields,
+            ret,
             fallback,
             allows.iter().fold(ir::Condition::Never, |c, x| c.join(x)),
             denys.iter().fold(ir::Condition::Never, |c, x| c.join(x)),

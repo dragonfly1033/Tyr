@@ -370,6 +370,7 @@ fn emit_function(action: &ActionRules) -> TokenStream {
     let ActionRules(
         ActionName(name),
         FieldList(fields),
+        _ret,
         fallback,
         allow_cond,
         deny_cond,

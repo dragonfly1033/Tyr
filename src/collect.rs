@@ -86,7 +86,7 @@ pub(crate) fn collect_code(
                 ids.struct_names.insert(name.clone());
             }
             CodeItem::Action(a) => {
-                let Action(Id(name), _) = a;
+                let Action(Id(name), ..) = a;
                 if let Some(cat) = cat_map.get(name) {
                     // safe because rule_blocks aren't added here.
                     return Err(CompilerError::AlreadyDefined(format!(

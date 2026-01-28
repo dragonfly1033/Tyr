@@ -12,17 +12,17 @@ struct Data [] {
     f2: str,
 };
 
-action read_data(Data);
-action do_nothing(Data);
-actiongroup all = read_data, do_nothing;
+action read_data(Data) -> Data fallback deny;
+action write_data(Data) -> Data fallback deny;
+actiongroup all = read_data, write_data;
 
-rules all(data: Data) fallback deny {
+rules all(data: Data) {
     allow when data.meta.f1 > 4 and data.meta contains_all those;
     deny when "oasdn" matches `this that`;
     apply [those, that] always;
 };
 
-rules do_nothing(data: Data) fallback deny {
+rules write_data(data: Data) {
     allow always;
     deny never;
 };

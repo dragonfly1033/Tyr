@@ -1,12 +1,9 @@
 use regex::Regex;
 
 use crate::{
-    ast::{
-        Action, ActionG, BoolExpr, Condition, Expr, ExprList, ExprType, Fallback, Field, FieldList,
-        FieldValue, Id, IdList, Rule, RuleBlock, Rules, Struct, TagG, TitleId, Type, TypeList,
-    },
-    collect::{CollectedCode, Identifiers},
-    CompilerError,
+    CompilerError, ast::{
+        Action, ActionG, BoolExpr, Condition, Expr, ExprList, ExprType, Fallback, Field, FieldList, FieldValue, Id, IdList, Rule, RuleBlock, Rules, Struct, TagG, TitleId, Type, TypeList
+    }, collect::{CollectedCode, Identifiers}
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -179,6 +176,8 @@ pub(crate) struct GenerationContext {
     pub(crate) tag_mappings: NameMap,      // name -> members
     pub(crate) action_mappings: NameMap,   // (name -> members)
     pub(crate) struct_intrinsics: NameMap, // name -> intrinsic tags (including inherited)
+    pub(crate) action_fallback: HashMap<String, Fallback>, // name -> Fallback
+    pub(crate) action_return: HashMap<String, Type>, // name -> return type
     pub(crate) ids: Identifiers,
 }
 
@@ -188,6 +187,8 @@ impl GenerationContext {
             tag_mappings: NameMap::new(),
             action_mappings: NameMap::new(),
             struct_intrinsics: NameMap::new(),
+            action_fallback: HashMap::new(),
+            action_return: HashMap::new(),
             ids: Identifiers::default(),
         }
     }
@@ -226,12 +227,13 @@ impl CompilerContext {
 //      v6.1. Struct field names are a set
 //   v7. Struct definitions are not cyclic
 //   v8. Action arg types exist
+//      v8.1. Action return type exists and is struct
+//      v8.2. Action return type is struct
 //   v9. Members of ActionGroups are defined as Action or ActionGroup
 //  v10. ActionGroup Definitions are not cyclic
 //  v11. Members of ActionGroups have the same arg signature
 //  v12. RuleBlocks identifiers are a subset of Action+ActionGroups
 //  v13. RuleBlocks arg types match the arg signture of the named Action(Group)
-//      v13.1. action group rule block fallback values should be the same for consituent action rule blocks.
 //  v14. RuleBlocks Rules are valid
 //      v15. Apply tags should exist
 //      => Condition is valid (refer to validate_condition for requirements)
@@ -242,6 +244,8 @@ impl CompilerContext {
 // s3. types: set of valid types
 // s4. action_groups: map ids of Actions and ActionGroups to expanded list of Actions and Type list of args
 // s5. action_signatures: map ids of Actions and ActionGroups to Type list of args
+// s6. action_fallback: map ids of Actions to Fallback
+// s7. action_return: map ids of Actions to return type
 pub fn validate_code(
     code: &CollectedCode,
     ids: Identifiers,
@@ -313,7 +317,7 @@ pub fn validate_code(
     // Actions --------------------------------------------------------------
     let mut action_arg_types: HashMap<String, Vec<Type>> = HashMap::new();
     for action in &code.actions {
-        let (name, types) = validate_action(action, &ctx)?;
+        let (name, types, ret, fallback) = validate_action(action, &ctx)?;
         action_arg_types.insert(name.clone(), types.clone());
         // s4. actions only
         let mut tmp: HashSet<String> = HashSet::new();
@@ -321,6 +325,10 @@ pub fn validate_code(
         gen_ctx.action_mappings.insert(name.clone(), tmp);
         // s5. actions only
         ctx.action_signatures.insert(name.clone(), types.clone());
+        // s6
+        gen_ctx.action_fallback.insert(name.clone(), fallback);
+        // s7
+        gen_ctx.action_return.insert(name, ret);
     }
 
     // ActionGroups --------------------------------------------------------------
@@ -371,20 +379,8 @@ pub fn validate_code(
     }
 
     // RuleBlocks --------------------------------------------------------------
-    let mut action_fallback_map: HashMap<String, Fallback> = HashMap::new();
     for rule_block in &code.rule_blocks {
-        let (name, fallback) = validate_rule_block(rule_block, &ctx)?;
-
-        // v13.1.
-        if let Some(actions) = gen_ctx.action_mappings.get(&name) {
-            for action in actions {
-                if let Some(v) = action_fallback_map.insert(action.clone(), fallback.clone())
-                    && v != fallback
-                {
-                    return Err(CompilerError::ValueError(format!("RuleBlock {name} has fallback {fallback:?} which conflicts with RuleBlock {action} with fallback {v:?}.")));
-                }
-            }
-        }
+        validate_rule_block(rule_block, &ctx)?;
     }
     // --------------------------------------------------------------------------
 
@@ -471,8 +467,8 @@ fn validate_struct(
 fn validate_action(
     action: &&Action,
     ctx: &CompilerContext,
-) -> Result<(String, Vec<Type>), CompilerError> {
-    let &Action(Id(name), types) = action;
+) -> Result<(String, Vec<Type>, Type, Fallback), CompilerError> {
+    let &Action(Id(name), types, ret, fallback) = action;
 
     let TypeList(types) = types;
     let types = types.clone();
@@ -486,7 +482,21 @@ fn validate_action(
         }
     }
 
-    Ok((name.clone(), types))
+    // v8.1
+    if !ctx.types.contains(ret) {
+        return Err(CompilerError::TypeError(format!(
+            "Action {name} has unknown return type {ret:?}."
+        )));
+    }
+
+    // v8.2
+    if !matches!(ret, Type::Struct(_)) {
+        return Err(CompilerError::TypeError(format!(
+            "Action {name} has non-struct return type {ret:?}."
+        )));
+    }
+
+    Ok((name.clone(), types, ret.clone(), fallback.clone()))
 }
 
 fn validate_action_group(
@@ -560,8 +570,8 @@ fn get_field_type(
 fn validate_rule_block(
     rule_block: &&RuleBlock,
     ctx: &CompilerContext,
-) -> Result<(String, Fallback), CompilerError> {
-    let &RuleBlock(Id(name), args, fallback, Rules(rules)) = rule_block;
+) -> Result<(), CompilerError> {
+    let &RuleBlock(Id(name), args, Rules(rules)) = rule_block;
     let mut block_ctx = RuleBlockContext::new(name.clone());
 
     let FieldList(args) = args;
@@ -610,7 +620,7 @@ fn validate_rule_block(
         }
     }
 
-    Ok((name.clone(), fallback.clone()))
+    Ok(())
 }
 
 // Requirements: BoolExpr must be valid (see validate_bool_expr)
@@ -1257,8 +1267,8 @@ mod test {
             ))
         }
 
-        pub fn action(name: &str, args: Vec<Type>) -> CodeItem {
-            CodeItem::Action(Action(Id(name.to_string()), TypeList(args)))
+        pub fn action(name: &str, args: Vec<Type>, ret: Type, fallback: Fallback) -> CodeItem {
+            CodeItem::Action(Action(Id(name.to_string()), TypeList(args), ret, fallback))
         }
 
         pub fn action_group(name: &str, members: Vec<&str>) -> CodeItem {
@@ -1271,7 +1281,6 @@ mod test {
         pub fn rule_block(
             name: &str,
             args: Vec<(&str, Type)>,
-            fallback: Fallback,
             rules: Vec<Rule>,
         ) -> CodeItem {
             CodeItem::RuleBlock(RuleBlock(
@@ -1281,7 +1290,6 @@ mod test {
                         .map(|(n, t)| Field(Id(n.to_string()), t.clone()))
                         .collect(),
                 ),
-                fallback,
                 Rules(rules),
             ))
         }
@@ -1386,13 +1394,14 @@ mod test {
             TestCase::new_passing(
                 "RuleBlock is action",
                 vec![
-                    mock::action("a", v()),
-                    mock::rule_block("a", v(), deny!(), v()),
+                    mock::struct_def("A", v(), v()),
+                    mock::action("a", v(), struct_type!("A"), deny!()),
+                    mock::rule_block("a", v(), v()),
                 ],
             ),
             TestCase::new_failing(
                 "RuleBlock is not action",
-                vec![mock::rule_block("a", v(), deny!(), v())],
+                vec![mock::rule_block("a", v(), v())],
                 "not a defined Action",
             ),
             TestCase::new_failing(
@@ -1574,14 +1583,44 @@ mod test {
                 "action arg types exist",
                 vec![
                     mock::struct_def("This", v(), v()),
-                    mock::action("read", vec![struct_type!("This")]),
-                    mock::action("write", vec![Type::Int]),
+                    mock::action("read", vec![struct_type!("This")], struct_type!("This"), deny!()),
+                    mock::action("write", vec![Type::Int], struct_type!("This"), deny!()),
                 ],
             ),
             TestCase::new_failing(
                 "action arg types dont exist",
-                vec![mock::action("read", vec![struct_type!("This")])],
+                vec![
+                    mock::struct_def("A", v(), v()),
+                    mock::action("read", vec![struct_type!("This")], struct_type!("A"), deny!()),
+                ],
                 "has argument of unknown type",
+            ),
+        ]);
+    }
+
+    #[test]
+    fn test_action_return_type_is_existing_struct() {
+        test_cases(vec![
+            TestCase::new_passing(
+                "action return type exists",
+                vec![
+                    mock::struct_def("This", v(), v()),
+                    mock::action("read", vec![struct_type!("This")], struct_type!("This"), deny!()),
+                ],
+            ),
+            TestCase::new_failing(
+                "action return type doesnt exist",
+                vec![
+                    mock::action("a", v(), struct_type!("A"), deny!()),
+                ],
+                "unknown return type",
+            ),
+            TestCase::new_failing(
+                "action return type is not a struct",
+                vec![
+                    mock::action("a", v(), Type::Int, deny!()),
+                ],
+                "non-struct return type",
             ),
         ]);
     }
@@ -1592,17 +1631,19 @@ mod test {
             TestCase::new_passing(
                 "action group members exist",
                 vec![
-                    mock::action("this", v()),
-                    mock::action("that", v()),
-                    mock::action("other", v()),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", v(), struct_type!("AA"), deny!()),
+                    mock::action("that", v(), struct_type!("AA"), deny!()),
+                    mock::action("other", v(), struct_type!("AA"), deny!()),
                     mock::action_group("group", vec!["this", "that", "other"]),
                 ],
             ),
             TestCase::new_failing(
                 "action group members dont exist",
                 vec![
-                    mock::action("this", v()),
-                    mock::action("other", v()),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", v(), struct_type!("AA"), deny!()),
+                    mock::action("other", v(), struct_type!("AA"), deny!()),
                     mock::action_group("group", vec!["this", "that", "other"]),
                 ],
                 "undefined",
@@ -1616,10 +1657,11 @@ mod test {
             TestCase::new_passing(
                 "Action group no cycles",
                 vec![
-                    mock::action("a", v()),
-                    mock::action("b", v()),
-                    mock::action("c", v()),
-                    mock::action("d", v()),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("a", v(), struct_type!("AA"), deny!()),
+                    mock::action("b", v(), struct_type!("AA"), deny!()),
+                    mock::action("c", v(), struct_type!("AA"), deny!()),
+                    mock::action("d", v(), struct_type!("AA"), deny!()),
                     mock::action_group("group1", vec!["a", "b"]),
                     mock::action_group("group2", vec!["group1", "c"]),
                     mock::action_group("group3", vec!["group1", "group2", "a", "d"]),
@@ -1628,10 +1670,11 @@ mod test {
             TestCase::new_failing(
                 "Action group with cycles",
                 vec![
-                    mock::action("a", v()),
-                    mock::action("b", v()),
-                    mock::action("c", v()),
-                    mock::action("d", v()),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("a", v(), struct_type!("AA"), deny!()),
+                    mock::action("b", v(), struct_type!("AA"), deny!()),
+                    mock::action("c", v(), struct_type!("AA"), deny!()),
+                    mock::action("d", v(), struct_type!("AA"), deny!()),
                     mock::action_group("group1", vec!["a", "b", "group3"]),
                     mock::action_group("group2", vec!["group1", "c"]),
                     mock::action_group("group3", vec!["group2", "a", "d"]),
@@ -1647,18 +1690,20 @@ mod test {
             TestCase::new_passing(
                 "Action group empty args",
                 vec![
-                    mock::action("a", v()),
-                    mock::action("b", v()),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("a", v(), struct_type!("AA"), deny!()),
+                    mock::action("b", v(), struct_type!("AA"), deny!()),
                     mock::action_group("group1", vec!["a", "b"]),
                 ],
             ),
             TestCase::new_passing(
                 "Action group matching args",
                 vec![
+                    mock::struct_def("AA", v(), v()),
                     mock::struct_def("This", v(), v()),
-                    mock::action("a", vec![Type::Int, struct_type!("This")]),
-                    mock::action("b", vec![Type::Int, struct_type!("This")]),
-                    mock::action("c", vec![Type::Int, struct_type!("This")]),
+                    mock::action("a", vec![Type::Int, struct_type!("This")], struct_type!("AA"), deny!()),
+                    mock::action("b", vec![Type::Int, struct_type!("This")], struct_type!("AA"), deny!()),
+                    mock::action("c", vec![Type::Int, struct_type!("This")], struct_type!("AA"), deny!()),
                     mock::action_group("group1", vec!["a", "b"]),
                     mock::action_group("group2", vec!["group1", "c"]),
                 ],
@@ -1666,8 +1711,9 @@ mod test {
             TestCase::new_failing(
                 "Action group non matching members",
                 vec![
-                    mock::action("a", v()),
-                    mock::action("b", vec![Type::Int]),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("a", v(), struct_type!("AA"), deny!()),
+                    mock::action("b", vec![Type::Int], struct_type!("AA"), deny!()),
                     mock::action_group("group1", vec!["a", "b"]),
                 ],
                 "must share the same argument signature",
@@ -1675,9 +1721,10 @@ mod test {
             TestCase::new_failing(
                 "Action group non matching members (nested)",
                 vec![
-                    mock::action("a", v()),
-                    mock::action("b", vec![Type::Int]),
-                    mock::action("c", v()),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("a", v(), struct_type!("AA"), deny!()),
+                    mock::action("b", vec![Type::Int], struct_type!("AA"), deny!()),
+                    mock::action("c", v(), struct_type!("AA"), deny!()),
                     mock::action_group("group1", vec!["a", "c"]),
                     mock::action_group("group2", vec!["group1", "b"]),
                 ],
@@ -1692,24 +1739,27 @@ mod test {
             TestCase::new_passing(
                 "valid rule block",
                 vec![
-                    mock::action("this", v()),
-                    mock::rule_block("this", v(), deny!(), v()),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", v(), struct_type!("AA"), deny!()),
+                    mock::rule_block("this", v(), v()),
                 ],
             ),
             TestCase::new_failing(
                 "rule block name is not action",
                 vec![
+                    mock::struct_def("AA", v(), v()),
                     mock::tag("this"),
-                    mock::rule_block("this", v(), deny!(), v()),
+                    mock::rule_block("this", v(), v()),
                 ],
                 "not Action or ActionGroup",
             ),
             TestCase::new_failing(
                 "rule block redefined",
                 vec![
-                    mock::action("this", v()),
-                    mock::rule_block("this", v(), deny!(), v()),
-                    mock::rule_block("this", v(), deny!(), v()),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", v(), struct_type!("AA"), deny!()),
+                    mock::rule_block("this", v(), v()),
+                    mock::rule_block("this", v(), v()),
                 ],
                 "multiple times",
             ),
@@ -1722,39 +1772,44 @@ mod test {
             TestCase::new_passing(
                 "rule block signature empty",
                 vec![
-                    mock::action("this", v()),
-                    mock::rule_block("this", v(), deny!(), v()),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", v(), struct_type!("AA"), deny!()),
+                    mock::rule_block("this", v(), v()),
                 ],
             ),
             TestCase::new_passing(
                 "rule block signature exists",
                 vec![
-                    mock::action("this", vec![Type::Int]),
-                    mock::rule_block("this", vec![("a", Type::Int)], deny!(), v()),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", vec![Type::Int], struct_type!("AA"), deny!()),
+                    mock::rule_block("this", vec![("a", Type::Int)], v()),
                 ],
             ),
             TestCase::new_passing(
                 "rule block signature exists as action group",
                 vec![
-                    mock::action("this", vec![Type::Int]),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", vec![Type::Int], struct_type!("AA"), deny!()),
                     mock::action_group("group", vec!["this"]),
-                    mock::rule_block("group", vec![("a", Type::Int)], deny!(), v()),
+                    mock::rule_block("group", vec![("a", Type::Int)], v()),
                 ],
             ),
             TestCase::new_failing(
                 "rule block signature does not exist",
                 vec![
-                    mock::action("this", v()),
-                    mock::rule_block("this", vec![("a", Type::Int)], deny!(), v()),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", v(), struct_type!("AA"), deny!()),
+                    mock::rule_block("this", vec![("a", Type::Int)], v()),
                 ],
                 "incorrect argument types",
             ),
             TestCase::new_failing(
                 "rule block signature exists as action group",
                 vec![
-                    mock::action("this", vec![Type::String]),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", vec![Type::String], struct_type!("AA"), deny!()),
                     mock::action_group("group", vec!["this"]),
-                    mock::rule_block("group", vec![("a", Type::Int)], deny!(), v()),
+                    mock::rule_block("group", vec![("a", Type::Int)], v()),
                 ],
                 "incorrect argument types",
             ),
@@ -1767,11 +1822,11 @@ mod test {
             TestCase::new_passing(
                 "rule block signature empty",
                 vec![
-                    mock::action("this", vec![Type::Int, Type::String]),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", vec![Type::Int, Type::String], struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         vec![("a", Type::Int), ("b", Type::String)],
-                        deny!(),
                         v(),
                     ),
                 ],
@@ -1779,43 +1834,15 @@ mod test {
             TestCase::new_failing(
                 "rule block signature exists",
                 vec![
-                    mock::action("this", vec![Type::Int, Type::String]),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", vec![Type::Int, Type::String], struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         vec![("a", Type::Int), ("a", Type::String)],
-                        deny!(),
                         v(),
                     ),
                 ],
                 "defined multiple times",
-            ),
-        ]);
-    }
-
-    #[test]
-    fn test_rule_block_fallback_conflict() {
-        test_cases(vec![
-            TestCase::new_passing(
-                "rule block fallback matches",
-                vec![
-                    mock::action("this", v()),
-                    mock::action("that", v()),
-                    mock::action_group("group", vec!["this", "that"]),
-                    mock::rule_block("this", v(), deny!(), v()),
-                    mock::rule_block("group", v(), deny!(), v()),
-                ],
-            ),
-            TestCase::new_failing(
-                "rule block fallback does not match",
-                vec![
-                    mock::action("this", v()),
-                    mock::action("that", v()),
-                    mock::action_group("group", vec!["this", "that"]),
-                    mock::rule_block("this", v(), allow!(), v()),
-                    mock::rule_block("that", v(), deny!(), v()),
-                    mock::rule_block("group", v(), deny!(), v()),
-                ],
-                "conflicts with",
             ),
         ]);
     }
@@ -1826,12 +1853,12 @@ mod test {
             TestCase::new_passing(
                 "Apply tags exist",
                 vec![
+                    mock::struct_def("AA", v(), v()),
                     mock::tag("a"),
-                    mock::action("this", v()),
+                    mock::action("this", v(), struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         v(),
-                        deny!(),
                         vec![mock::apply(vec!["a"], always!())],
                     ),
                 ],
@@ -1839,11 +1866,11 @@ mod test {
             TestCase::new_failing(
                 "Apply tags dont exist",
                 vec![
-                    mock::action("this", v()),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", v(), struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         v(),
-                        deny!(),
                         vec![mock::apply(vec!["a"], always!())],
                     ),
                 ],
@@ -1858,25 +1885,25 @@ mod test {
             TestCase::new_passing(
                 "Rule condition action exists and has rule block",
                 vec![
-                    mock::action("this", v()),
-                    mock::action("other", v()),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", v(), struct_type!("AA"), deny!()),
+                    mock::action("other", v(), struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         v(),
-                        deny!(),
                         vec![mock::allow(when!(rule!("other", v())))],
                     ),
-                    mock::rule_block("other", v(), deny!(), v()),
+                    mock::rule_block("other", v(), v()),
                 ],
             ),
             TestCase::new_failing(
                 "Rule condition action doesnt exist",
                 vec![
-                    mock::action("this", v()),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", v(), struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         v(),
-                        deny!(),
                         vec![mock::allow(when!(rule!("other", v())))],
                     ),
                 ],
@@ -1885,12 +1912,12 @@ mod test {
             TestCase::new_failing(
                 "Rule condition action exists but has no rule block",
                 vec![
-                    mock::action("this", v()),
-                    mock::action("other", v()),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", v(), struct_type!("AA"), deny!()),
+                    mock::action("other", v(), struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         v(),
-                        deny!(),
                         vec![mock::allow(when!(rule!("other", v())))],
                     ),
                 ],
@@ -1905,14 +1932,14 @@ mod test {
             TestCase::new_passing(
                 "rule condition arg types match",
                 vec![
+                    mock::struct_def("AA", v(), v()),
                     mock::struct_def("This", v(), vec![("b", struct_type!("That"))]),
                     mock::struct_def("That", v(), v()),
-                    mock::action("this", vec![struct_type!("This")]),
-                    mock::action("other", vec![Type::Int, struct_type!("That")]),
+                    mock::action("this", vec![struct_type!("This")], struct_type!("AA"), deny!()),
+                    mock::action("other", vec![Type::Int, struct_type!("That")], struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         vec![("a", struct_type!("This"))],
-                        deny!(),
                         vec![mock::allow(when!(rule!(
                             "other",
                             vec![num!(5), field!("a"."b")]
@@ -1921,7 +1948,6 @@ mod test {
                     mock::rule_block(
                         "other",
                         vec![("a", Type::Int), ("b", struct_type!("That"))],
-                        deny!(),
                         v(),
                     ),
                 ],
@@ -1929,20 +1955,19 @@ mod test {
             TestCase::new_failing(
                 "rule condition arg types dont match",
                 vec![
+                    mock::struct_def("AA", v(), v()),
                     mock::struct_def("This", v(), vec![("b", struct_type!("That"))]),
                     mock::struct_def("That", v(), v()),
-                    mock::action("this", vec![struct_type!("This")]),
-                    mock::action("other", vec![Type::Int, struct_type!("This")]),
+                    mock::action("this", vec![struct_type!("This")], struct_type!("AA"), deny!()),
+                    mock::action("other", vec![Type::Int, struct_type!("This")], struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "other",
                         vec![("a", Type::Int), ("b", struct_type!("This"))],
-                        deny!(),
                         v(),
                     ),
                     mock::rule_block(
                         "this",
                         vec![("a", struct_type!("This"))],
-                        deny!(),
                         vec![mock::allow(when!(rule!(
                             "other",
                             vec![num!(5), field!("a"."b")]
@@ -1960,11 +1985,11 @@ mod test {
             TestCase::new_passing(
                 "inequality types are ints",
                 vec![
-                    mock::action("this", vec![Type::Int]),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", vec![Type::Int], struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         vec![("a", Type::Int)],
-                        deny!(),
                         vec![mock::allow(when!(gte!(num!(5), field!("a"))))],
                     ),
                 ],
@@ -1972,11 +1997,11 @@ mod test {
             TestCase::new_failing(
                 "inequality types are not ints",
                 vec![
-                    mock::action("this", vec![Type::Int]),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", vec![Type::Int], struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         vec![("a", Type::Int)],
-                        deny!(),
                         vec![mock::allow(when!(lt!(string!("this"), field!("a"))))],
                     ),
                 ],
@@ -1991,11 +2016,11 @@ mod test {
             TestCase::new_passing(
                 "equality types are both ints",
                 vec![
-                    mock::action("this", vec![Type::Int]),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", vec![Type::Int], struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         vec![("a", Type::Int)],
-                        deny!(),
                         vec![mock::allow(when!(eq!(num!(5), field!("a"))))],
                     ),
                 ],
@@ -2003,11 +2028,11 @@ mod test {
             TestCase::new_failing(
                 "equality types dont match",
                 vec![
-                    mock::action("this", vec![Type::Int]),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", vec![Type::Int], struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         vec![("a", Type::Int)],
-                        deny!(),
                         vec![mock::allow(when!(eq!(string!("this"), field!("a"))))],
                     ),
                 ],
@@ -2022,11 +2047,11 @@ mod test {
             TestCase::new_passing(
                 "match types are correct",
                 vec![
-                    mock::action("this", vec![Type::Int]),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", vec![Type::Int], struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         vec![("a", Type::Int)],
-                        deny!(),
                         vec![mock::allow(when!(match_!(string!("wow"), regex!("a"))))],
                     ),
                 ],
@@ -2034,11 +2059,11 @@ mod test {
             TestCase::new_failing(
                 "match on int",
                 vec![
-                    mock::action("this", vec![Type::Int]),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", vec![Type::Int], struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         vec![("a", Type::Int)],
-                        deny!(),
                         vec![mock::allow(when!(match_!(num!(5), regex!("a"))))],
                     ),
                 ],
@@ -2047,11 +2072,11 @@ mod test {
             TestCase::new_failing(
                 "match to string",
                 vec![
-                    mock::action("this", vec![Type::Int]),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", vec![Type::Int], struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         vec![("a", Type::Int)],
-                        deny!(),
                         vec![mock::allow(when!(match_!(string!("hey"), string!("a"))))],
                     ),
                 ],
@@ -2066,12 +2091,12 @@ mod test {
             TestCase::new_passing(
                 "contains condition on TagList",
                 vec![
+                    mock::struct_def("AA", v(), v()),
                     mock::tag("a"),
-                    mock::action("this", v()),
+                    mock::action("this", v(), struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         v(),
-                        deny!(),
                         vec![mock::allow(when!(contains!(any_arg!(), "a")))],
                     ),
                 ],
@@ -2079,13 +2104,13 @@ mod test {
             TestCase::new_passing(
                 "contains condition on struct",
                 vec![
+                    mock::struct_def("AA", v(), v()),
                     mock::tag("a"),
                     mock::struct_def("That", v(), v()),
-                    mock::action("this", vec![struct_type!("That")]),
+                    mock::action("this", vec![struct_type!("That")], struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         vec![("b", struct_type!("That"))],
-                        deny!(),
                         vec![mock::allow(when!(contains!(field!("b"), "a")))],
                     ),
                 ],
@@ -2093,13 +2118,13 @@ mod test {
             TestCase::new_failing(
                 "contains condition with tag group",
                 vec![
+                    mock::struct_def("AA", v(), v()),
                     mock::tag("a"),
                     mock::tag_group("group", vec!["a"]),
-                    mock::action("this", v()),
+                    mock::action("this", v(), struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         v(),
-                        deny!(),
                         vec![mock::allow(when!(contains!(any_arg!(), "group")))],
                     ),
                 ],
@@ -2108,13 +2133,13 @@ mod test {
             TestCase::new_failing(
                 "contains condition on int",
                 vec![
+                    mock::struct_def("AA", v(), v()),
                     mock::tag("a"),
                     mock::struct_def("That", v(), v()),
-                    mock::action("this", vec![Type::Int]),
+                    mock::action("this", vec![Type::Int], struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         vec![("b", Type::Int)],
-                        deny!(),
                         vec![mock::allow(when!(contains!(field!("b"), "a")))],
                     ),
                 ],
@@ -2129,12 +2154,12 @@ mod test {
             TestCase::new_passing(
                 "contains a tag that exists",
                 vec![
+                    mock::struct_def("AA", v(), v()),
                     mock::tag("a"),
-                    mock::action("this", v()),
+                    mock::action("this", v(), struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         v(),
-                        deny!(),
                         vec![mock::allow(when!(contains!(any_arg!(), "a")))],
                     ),
                 ],
@@ -2142,15 +2167,15 @@ mod test {
             TestCase::new_passing(
                 "contains_any tag that all exist",
                 vec![
+                    mock::struct_def("AA", v(), v()),
                     mock::tag("a"),
                     mock::tag("b"),
                     mock::tag("c"),
                     mock::tag_group("group", vec!["a", "b"]),
-                    mock::action("this", v()),
+                    mock::action("this", v(), struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         v(),
-                        deny!(),
                         vec![mock::allow(when!(contains_any!(
                             any_arg!(),
                             ["group", "c"]
@@ -2161,11 +2186,11 @@ mod test {
             TestCase::new_failing(
                 "lacks a tag that doesnt exists",
                 vec![
-                    mock::action("this", v()),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", v(), struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         v(),
-                        deny!(),
                         vec![mock::allow(when!(lacks!(any_arg!(), "a")))],
                     ),
                 ],
@@ -2174,14 +2199,14 @@ mod test {
             TestCase::new_failing(
                 "lacks_any tag that dont all exist",
                 vec![
+                    mock::struct_def("AA", v(), v()),
                     mock::tag("a"),
                     mock::tag("b"),
                     mock::tag_group("group", vec!["a", "b"]),
-                    mock::action("this", v()),
+                    mock::action("this", v(), struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         v(),
-                        deny!(),
                         vec![mock::allow(when!(lacks_any!(any_arg!(), ["group", "c"])))],
                     ),
                 ],
@@ -2196,11 +2221,11 @@ mod test {
             TestCase::new_passing(
                 "Math expr of ints",
                 vec![
-                    mock::action("this", vec![Type::Int]),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", vec![Type::Int], struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         vec![("a", Type::Int)],
-                        deny!(),
                         vec![mock::allow(when!(gt!(
                             mul!(neg!(add!(num!(1), num!(3))), div!(num!(4), field!("a"))),
                             num!(3)
@@ -2211,11 +2236,11 @@ mod test {
             TestCase::new_failing(
                 "Math expr with string",
                 vec![
-                    mock::action("this", vec![Type::String]),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", vec![Type::String], struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         vec![("a", Type::String)],
-                        deny!(),
                         vec![mock::allow(when!(gt!(
                             mul!(neg!(add!(num!(1), num!(3))), div!(num!(4), field!("a"))),
                             num!(3)
@@ -2233,11 +2258,11 @@ mod test {
             TestCase::new_passing(
                 "Field exists level 1",
                 vec![
-                    mock::action("this", vec![Type::Int]),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", vec![Type::Int], struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         vec![("a", Type::Int)],
-                        deny!(),
                         vec![mock::allow(when!(eq!(field!("a"), num!(5))))],
                     ),
                 ],
@@ -2245,12 +2270,12 @@ mod test {
             TestCase::new_passing(
                 "Field exists level 2",
                 vec![
+                    mock::struct_def("AA", v(), v()),
                     mock::struct_def("This", v(), vec![("b", Type::Int)]),
-                    mock::action("this", vec![struct_type!("This")]),
+                    mock::action("this", vec![struct_type!("This")], struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         vec![("a", struct_type!("This"))],
-                        deny!(),
                         vec![mock::allow(when!(eq!(field!("a"."b"), num!(5))))],
                     ),
                 ],
@@ -2258,11 +2283,11 @@ mod test {
             TestCase::new_failing(
                 "Field doesnt exist level 1",
                 vec![
-                    mock::action("this", vec![Type::Int]),
+                    mock::struct_def("AA", v(), v()),
+                    mock::action("this", vec![Type::Int], struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         vec![("c", Type::Int)],
-                        deny!(),
                         vec![mock::allow(when!(eq!(field!("a"), num!(5))))],
                     ),
                 ],
@@ -2271,12 +2296,12 @@ mod test {
             TestCase::new_failing(
                 "Field doesnt exist level 2",
                 vec![
+                    mock::struct_def("AA", v(), v()),
                     mock::struct_def("This", v(), vec![("c", Type::Int)]),
-                    mock::action("this", vec![struct_type!("This")]),
+                    mock::action("this", vec![struct_type!("This")], struct_type!("AA"), deny!()),
                     mock::rule_block(
                         "this",
                         vec![("a", struct_type!("This"))],
-                        deny!(),
                         vec![mock::allow(when!(eq!(field!("a"."b"), num!(5))))],
                     ),
                 ],
