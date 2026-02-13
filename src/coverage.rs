@@ -273,9 +273,11 @@ impl<'a> CoverageCtx<'a> {
     }
 
     fn accept_formula(&mut self, action: &ActionRules) -> z3::ast::Bool {
-        let ActionRules(_, _, _, fallback, allow_cond, deny_cond, _) = action;
-        let allow_z3 = self.translate_condition(allow_cond);
-        let deny_z3 = self.translate_condition(deny_cond);
+        let ActionRules(_, _, _, fallback, allow_conds, deny_conds, _) = action;
+        let allow_cond = allow_conds.iter().fold(Condition::Never, |acc, lc| acc.join(&lc.condition));
+        let deny_cond = deny_conds.iter().fold(Condition::Never, |acc, lc| acc.join(&lc.condition));
+        let allow_z3 = self.translate_condition(&allow_cond);
+        let deny_z3 = self.translate_condition(&deny_cond);
         let not_deny = deny_z3.not();
 
         match fallback {
@@ -283,7 +285,6 @@ impl<'a> CoverageCtx<'a> {
             Fallback::Deny | Fallback::Warn => {
                 z3::ast::Bool::and(&[&not_deny, &allow_z3])
             }
-            // TODO: Maybe separate Warn and show what cases were missed
         }
     }
 }
@@ -639,11 +640,11 @@ mod test {
                     FieldList(vec![]),
                     ast::Type::Int,
                     Fallback::Deny,
-                    Condition::When(Box::new(BoolExpr::Gt(
+                    vec![ir::LabelledCondition { label: "allow".into(), condition: Condition::When(Box::new(BoolExpr::Gt(
                         Box::new(MathExpr::Field(FieldValue(vec![Id("x".into())]))),
                         Box::new(MathExpr::Num(threshold)),
-                    ))),
-                    Condition::Never,
+                    )))}],
+                    vec![ir::LabelledCondition { label: "deny".into(), condition: Condition::Never}],
                     ir::Applications(Vec::new()),
                 )],
             }
@@ -668,11 +669,14 @@ mod test {
                     FieldList(vec![]),
                     ast::Type::Int,
                     Fallback::Deny,
-                    Condition::When(Box::new(BoolExpr::Gt(
-                        Box::new(MathExpr::Field(FieldValue(vec![Id("x".into())]))),
-                        Box::new(MathExpr::Num(5)),
-                    ))),
-                    Condition::Never,
+                    vec![ir::LabelledCondition {
+                        label: "allow".into(),
+                        condition: Condition::When(Box::new(BoolExpr::Gt(
+                            Box::new(MathExpr::Field(FieldValue(vec![Id("x".into())]))),
+                            Box::new(MathExpr::Num(5)),
+                        ))),
+                    }],
+                    vec![ir::LabelledCondition { label: "deny".into(), condition: Condition::Never}],
                     ir::Applications(Vec::new()),
                 )],
             }
@@ -694,11 +698,14 @@ mod test {
                 FieldList(vec![]),
                 ast::Type::Int,
                 Fallback::Deny,
-                Condition::When(Box::new(BoolExpr::Gt(
-                    Box::new(MathExpr::Field(FieldValue(vec![Id("x".into())]))),
-                    Box::new(MathExpr::Num(5)),
-                ))),
-                Condition::Never,
+                vec![ir::LabelledCondition {
+                    label: "allow".into(),
+                    condition: Condition::When(Box::new(BoolExpr::Gt(
+                        Box::new(MathExpr::Field(FieldValue(vec![Id("x".into())]))),
+                        Box::new(MathExpr::Num(5)),
+                    ))),
+                }],
+                vec![ir::LabelledCondition { label: "deny".into(), condition: Condition::Never}],
                 ir::Applications(Vec::new()),
             )],
         };
@@ -713,11 +720,14 @@ mod test {
                 FieldList(vec![]),
                 ast::Type::Int,
                 Fallback::Deny,
-                Condition::When(Box::new(BoolExpr::Lt(
-                    Box::new(MathExpr::Field(FieldValue(vec![Id("x".into())]))),
-                    Box::new(MathExpr::Num(3)),
-                ))),
-                Condition::Never,
+                vec![ir::LabelledCondition {
+                    label: "allow".into(), 
+                    condition: Condition::When(Box::new(BoolExpr::Lt(
+                        Box::new(MathExpr::Field(FieldValue(vec![Id("x".into())]))),
+                        Box::new(MathExpr::Num(3)),
+                    ))),
+                }],
+                vec![ir::LabelledCondition { label: "deny".into(), condition: Condition::Never}],
                 ir::Applications(Vec::new()),
             )],
         };

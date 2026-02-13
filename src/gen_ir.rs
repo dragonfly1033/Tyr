@@ -84,8 +84,8 @@ fn compile_actions(
             FieldList,
             Type,
             Fallback,
-            Vec<ir::Condition>,
-            Vec<ir::Condition>,
+            Vec<ir::LabelledCondition>,
+            Vec<ir::LabelledCondition>,
             ir::Applications,
         ),
     > = HashMap::new();
@@ -93,7 +93,7 @@ fn compile_actions(
     for ast::RuleBlock(ast::Id(name), fields, ast::Rules(rules)) in blocks {
         let args = collect_arg_names(fields);
 
-        let (allow_cond, deny_cond, appls, mut regs, mut tags) = compile_rules(&rules, &args, ctx);
+        let (allow_conds, deny_conds, appls, mut regs, mut tags) = compile_rules(&rules, &args, ctx);
 
         regexes.append(&mut regs);
         tag_sets.append(&mut tags);
@@ -102,8 +102,8 @@ fn compile_actions(
             for action in actions {
                 if let Some((_, _, _, allows, denys, applications)) = action_rules_info.get_mut(action)
                 {
-                    allows.push(allow_cond.clone());
-                    denys.push(deny_cond.clone());
+                    allows.append(&mut allow_conds.clone());
+                    denys.append(&mut deny_conds.clone());
                     applications.join(&mut appls.clone());
                 } else {
                     action_rules_info.insert(
@@ -112,8 +112,8 @@ fn compile_actions(
                             fields.clone(),
                             ctx.action_return.get(action).expect("Action {action} should have a known return value").clone(),
                             ctx.action_fallback.get(action).expect("Action {action} should have a known fallback value").clone(),
-                            vec![allow_cond.clone()],
-                            vec![deny_cond.clone()],
+                            allow_conds.clone(),
+                            deny_conds.clone(),
                             appls.clone(),
                         ),
                     );
@@ -130,8 +130,8 @@ fn compile_actions(
             fields,
             ret,
             fallback,
-            allows.iter().fold(ir::Condition::Never, |c, x| c.join(x)),
-            denys.iter().fold(ir::Condition::Never, |c, x| c.join(x)),
+            allows,
+            denys,
             applications,
         ));
     }
@@ -144,14 +144,14 @@ fn compile_rules(
     args: &Vec<ir::Id>,
     ctx: &GenerationContext,
 ) -> (
-    ir::Condition,
-    ir::Condition,
+    Vec<ir::LabelledCondition>,
+    Vec<ir::LabelledCondition>,
     ir::Applications,
     Vec<ir::Regex>,
     Vec<Vec<ir::Tag>>,
 ) {
-    let mut allows = ir::Condition::Never;
-    let mut denys = ir::Condition::Never;
+    let mut allows: Vec<ir::LabelledCondition> = Vec::new();
+    let mut denys: Vec<ir::LabelledCondition> = Vec::new();
     let mut applications: Vec<(ir::TagList, ir::Condition)> = Vec::new();
 
     let mut regexes: Vec<ir::Regex> = Vec::new();
@@ -160,22 +160,16 @@ fn compile_rules(
     for rule in rules {
         match rule {
             ast::Rule::Allow(c) => {
-                allows = allows.join(&compile_condition(
-                    c,
-                    &mut regexes,
-                    &mut tag_sets,
-                    args,
-                    ctx,
-                ));
+                allows.push(ir::LabelledCondition {
+                    label: c.to_string(),
+                    condition: compile_condition(c, &mut regexes, &mut tag_sets, args, ctx),
+                });
             }
             ast::Rule::Deny(c) => {
-                denys = denys.join(&compile_condition(
-                    c,
-                    &mut regexes,
-                    &mut tag_sets,
-                    args,
-                    ctx,
-                ));
+                denys.push(ir::LabelledCondition {
+                    label: c.to_string(),
+                    condition: compile_condition(c, &mut regexes, &mut tag_sets, args, ctx),
+                });
             }
             ast::Rule::Apply(ast::IdList(tags), c) => {
                 applications.push((

@@ -1,3 +1,4 @@
+use std::fmt;
 use crate::CompilerError;
 
 pub fn is_keyword(word: &str) -> bool {
@@ -240,6 +241,83 @@ pub enum CodeItemType {
 #[allow(unused)]
 #[derive(Debug, PartialEq)]
 pub struct Code(pub Vec<CodeItem>);
+
+impl fmt::Display for Id {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl fmt::Display for IdList {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let parts: Vec<_> = self.0.iter().map(|id| id.0.as_str()).collect();
+        write!(f, "[{}]", parts.join(", "))
+    }
+}
+
+impl fmt::Display for FieldValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let parts: Vec<_> = self.0.iter().map(|Id(s)| s.as_str()).collect();
+        write!(f, "{}", parts.join("."))
+    }
+}
+
+impl fmt::Display for Expr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Expr::Add(a, b) => write!(f, "({a} + {b})"),
+            Expr::Sub(a, b) => write!(f, "({a} - {b})"),
+            Expr::Mul(a, b) => write!(f, "({a} * {b})"),
+            Expr::Div(a, b) => write!(f, "({a} / {b})"),
+            Expr::Neg(a) => write!(f, "(-{a})"),
+            Expr::Num(n) => write!(f, "{n}"),
+            Expr::Field(fv) => write!(f, "{fv}"),
+            Expr::String(s) => write!(f, "\"{s}\""),
+            Expr::Regex(r) => write!(f, "`{r}`"),
+            Expr::AnyArg => write!(f, "any_arg"),
+            Expr::EveryArg => write!(f, "every_arg"),
+        }
+    }
+}
+
+impl fmt::Display for BoolExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BoolExpr::And(a, b) => write!(f, "({a} and {b})"),
+            BoolExpr::Or(a, b) => write!(f, "({a} or {b})"),
+            BoolExpr::Not(a) => write!(f, "(not {a})"),
+            BoolExpr::Rule(id, ExprList(args)) => {
+                let args: Vec<_> = args.iter().map(|e| e.to_string()).collect();
+                write!(f, "{}({}) allowed", id, args.join(", "))
+            }
+            BoolExpr::Gt(a, b) => write!(f, "{a} > {b}"),
+            BoolExpr::Lt(a, b) => write!(f, "{a} < {b}"),
+            BoolExpr::Gte(a, b) => write!(f, "{a} >= {b}"),
+            BoolExpr::Lte(a, b) => write!(f, "{a} <= {b}"),
+            BoolExpr::Eq(a, b) => write!(f, "{a} == {b}"),
+            BoolExpr::Neq(a, b) => write!(f, "{a} != {b}"),
+            BoolExpr::Match(a, b) => write!(f, "{a} matches {b}"),
+            BoolExpr::Contains(e, id) => write!(f, "{e} contains {id}"),
+            BoolExpr::ContainsAll(e, ids) => write!(f, "{e} contains_all {ids}"),
+            BoolExpr::ContainsAny(e, ids) => write!(f, "{e} contains_any {ids}"),
+            BoolExpr::Lacks(e, id) => write!(f, "{e} lacks {id}"),
+            BoolExpr::LacksAll(e, ids) => write!(f, "{e} lacks_all {ids}"),
+            BoolExpr::LacksAny(e, ids) => write!(f, "{e} lacks_any {ids}"),
+            BoolExpr::True => write!(f, "true"),
+            BoolExpr::False => write!(f, "false"),
+        }
+    }
+}
+
+impl fmt::Display for Condition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Condition::Always => write!(f, "always"),
+            Condition::Never => write!(f, "never"),
+            Condition::When(e) => write!(f, "when {e}"),
+        }
+    }
+}
 
 #[cfg(test)]
 mod test {

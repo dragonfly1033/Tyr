@@ -32,8 +32,13 @@ impl Applications {
     }
 }
 
-pub type AllowCondition = Condition;
-pub type DenyCondition = Condition;
+#[allow(unused)]
+#[derive(Debug, Clone)]
+pub struct LabelledCondition {
+    pub label: String,
+    pub condition: Condition,
+}
+
 #[allow(unused)]
 #[derive(Debug)]
 pub struct ActionRules(
@@ -41,8 +46,8 @@ pub struct ActionRules(
     pub FieldList,
     pub Type,
     pub Fallback,
-    pub AllowCondition,
-    pub DenyCondition,
+    pub Vec<LabelledCondition>,
+    pub Vec<LabelledCondition>,
     pub Applications,
 );
 

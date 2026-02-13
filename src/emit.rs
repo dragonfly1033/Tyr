@@ -30,13 +30,16 @@ fn emit_regex(i: &RegexId) -> TokenStream {
 }
 
 fn emit_fallback(fallback: &Fallback) -> TokenStream {
-    let q = emit_id("PolicyDecision");
-    let w = emit_id(&format!("{fallback:?}"));
-    quote! { #q::#w }
+    match fallback {
+        Fallback::Allow => quote! { PolicyDecision::Allow("fallback") },
+        Fallback::Deny => quote! { PolicyDecision::Deny("fallback") },
+        Fallback::Warn => quote! { PolicyDecision::Warn },
+    }
 }
-
 fn emit_boilerplate() -> TokenStream {
     quote! {
+        #![allow(unused_parens)]
+
         use std::sync::LazyLock;
         use regex::Regex;
 
@@ -44,8 +47,8 @@ fn emit_boilerplate() -> TokenStream {
 
         #[derive(Debug)]
         pub enum PolicyDecision {
-            Allow,
-            Deny,
+            Allow(&'static str),
+            Deny(&'static str),
             Warn,
         }
 
@@ -337,7 +340,7 @@ fn emit_struct(s: &Struct) -> TokenStream {
     let fields = emit_fields(fields);
 
     quote! {
-        #[derive(Debug,PartialEq,Eq)]
+        #[derive(Debug)]
         pub struct #name {
             #fields,
             tags: TagSet,
@@ -349,7 +352,7 @@ fn emit_struct(s: &Struct) -> TokenStream {
                     preset.union(&tags)
                 };
                 Self {
-                    #(#field_names: #field_names),*,
+                    #(#field_names),*,
                     tags: preset
                 }
             }
@@ -372,8 +375,8 @@ fn emit_function(action: &ActionRules) -> TokenStream {
         FieldList(fields),
         _ret,
         fallback,
-        allow_cond,
-        deny_cond,
+        allow_conds,
+        deny_conds,
         Applications(applications),
     ) = action;
 
@@ -381,8 +384,30 @@ fn emit_function(action: &ActionRules) -> TokenStream {
     let after_name = emit_id(&format!("after_{name}"));
     let fields = emit_fields(fields);
     let fallback = emit_fallback(fallback);
-    let allow_cond = emit_condition(allow_cond);
-    let deny_cond = emit_condition(deny_cond);
+    let deny_checks: Vec<_> = deny_conds
+        .iter()
+        .map(|lc| {
+            let cond = emit_condition(&lc.condition);
+            let label = &lc.label;
+            quote! {
+                if #cond {
+                    return PolicyDecision::Deny(#label);
+                }
+            }
+        })
+        .collect();
+    let allow_checks: Vec<_> = allow_conds
+        .iter()
+        .map(|lc| {
+            let cond = emit_condition(&lc.condition);
+            let label = &lc.label;
+            quote! {
+                if #cond {
+                    return PolicyDecision::Allow(#label);
+                }
+            }
+        })
+        .collect();
     let applications: Vec<_> = applications
         .iter()
         .map(|(TagList(tags), cond)| {
@@ -398,13 +423,9 @@ fn emit_function(action: &ActionRules) -> TokenStream {
 
     quote! {
         pub fn #can_name(#fields) -> PolicyDecision {
-            if (#deny_cond) {
-                return PolicyDecision::Deny;
-            } else if (#allow_cond) {
-                return PolicyDecision::Allow;
-            } else {
-                return #fallback
-            }
+            #(#deny_checks)*
+            #(#allow_checks)*
+            #fallback
         }
         pub fn #after_name() -> Vec<Tag> {
             let mut to_add: Vec<Tag> = Vec::new();
