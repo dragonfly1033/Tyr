@@ -19,6 +19,8 @@ mod ast;
 mod check;
 mod collect;
 mod emit;
+mod emit_python;
+mod emit_pyi;
 mod gen_ir;
 mod ir;
 mod coverage;
@@ -38,6 +40,10 @@ enum Opt {
         // name of generated crate.
         #[structopt(long, default_value = "policies")]
         name: String,
+
+        // generate pyo3 Python bindings.
+        #[structopt(long)]
+        python: bool,
     },
     /// Analyse coverage of a policy set, optionally comparing two
     Coverage {
@@ -108,15 +114,20 @@ fn compile_to_ir(file_input: String) -> ir::Code {
     gen_ir::compile_ir(&collected_code, generation_context)
 }
 
-fn compile(file_input: String) -> TokenStream {
-    let ir_ast = compile_to_ir(file_input);
-    emit::emit_code(ir_ast)
+fn compile(ir_ast: &ir::Code, python: bool, name: &str) -> TokenStream {
+    if python {
+        emit_python::emit_code(ir_ast, name)
+    } else {
+        emit::emit_code(ir_ast)
+    }
 }
 
 fn save_as_crate(
     code: TokenStream,
+    pyi: Option<String>,
     parent: PathBuf,
     crate_name: &str,
+    python: bool,
 ) -> Result<(), CompilerError> {
     let val = prettyplease::unparse(
         &syn::parse_file(&code.to_string()).map_err(|e| CompilerError::Formatting(e))?,
@@ -128,24 +139,65 @@ fn save_as_crate(
     fs::create_dir_all(&src_dir).map_err(|e| CompilerError::Io(e))?;
     fs::write(
         crate_dir.join(Path::new("Cargo.toml")),
-        cargo_toml(crate_name),
+        cargo_toml(crate_name, python),
     )
     .map_err(|e| CompilerError::Io(e))?;
     fs::write(src_dir.join(Path::new("lib.rs")), val).map_err(|e| CompilerError::Io(e))?;
 
+    if let Some(pyi_content) = pyi {
+        fs::write(
+            crate_dir.join(Path::new(&format!("{crate_name}.pyi"))),
+            pyi_content,
+        )
+        .map_err(|e| CompilerError::Io(e))?;
+
+        fs::write(
+            crate_dir.join(Path::new(&format!("pyproject.toml"))),
+            format!(r#"
+[build-system]
+requires = ["maturin>=1.0"]
+build-backend = "maturin"
+
+[project]
+name = "{crate_name}"
+version = "0.1.0"
+requires-python = ">=3.8"
+
+[tool.maturin]
+include = ["{crate_name}.pyi"]
+            "#),
+        )
+        .map_err(|e| CompilerError::Io(e))?;
+    }
+
     Ok(())
 }
 
-fn cargo_toml(name: &str) -> String {
+fn cargo_toml(name: &str, python: bool) -> String {
+    let pyo3_dep = if python {
+        r#"pyo3 = { version = "0.28.2" }
+"#
+    } else {
+        ""
+    };
+    let crate_type = if python {
+        format!(r#"
+[lib]
+name = "{name}"
+crate-type = ["cdylib"]
+"#)
+    } else {
+        String::new()
+    };
     format!(
         r#"[package]
 name = "{name}"
 version = "0.0.1"
 edition = "2024"
-
+{crate_type}
 [dependencies]
 regex = "1.12.2"
-"#
+{pyo3_dep}"#
     )
 }
 
@@ -160,11 +212,13 @@ fn read_file(path: &PathBuf) -> String {
 
 fn main() {
     match Opt::from_args() {
-        Opt::Compile { file, parent, name } => {
+        Opt::Compile { file, parent, name, python } => {
             let contents = read_file(&file);
-            let tokens = compile(contents);
+            let ir = compile_to_ir(contents);
+            let pyi = if python { Some(emit_pyi::emit_pyi(&ir)) } else { None };
+            let tokens = compile(&ir, python, name.as_str());
 
-            save_as_crate(tokens, parent, name.as_str())
+            save_as_crate(tokens, pyi, parent, name.as_str(), python)
                 .inspect_err(|e| {
                     panic!("Error saving '{}': {e:?}", name);
                 })

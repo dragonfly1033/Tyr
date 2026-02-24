@@ -36,12 +36,15 @@ fn emit_fallback(fallback: &Fallback) -> TokenStream {
         Fallback::Warn => quote! { PolicyDecision::Warn },
     }
 }
+
 fn emit_boilerplate() -> TokenStream {
     quote! {
         #![allow(unused_parens)]
 
         use std::sync::LazyLock;
         use regex::Regex;
+        use pyo3::prelude::*;
+        use pyo3::types::{PyTuple, PyDict, PyCFunction};
 
         const STATIC_REGEX_COMPILE_ERROR: &'static str = "Valid regex from transpilation";
 
@@ -52,66 +55,47 @@ fn emit_boilerplate() -> TokenStream {
             Warn,
         }
 
-        #[derive(Debug)]
-        pub enum PolicyResult<T> {
-            Allow(T),
-            Deny(String),
-            Warn,
-        }
-
-        macro_rules! as_item {
-            ($i:item) => { $i };
-        }
-
         macro_rules! count {
             () => { 0 };
             ($head:ident $(, $tail:ident)*) => { 1 + count! { $($tail),* } };
         }
 
-        macro_rules! build_enum {
+        macro_rules! build_tags {
             () => {
-                as_item! {
-                    #[allow(non_camel_case_types)]
-                    #[derive(Debug)]
-                    pub enum Tag {}
-                }
-                const NUM_TAGS: usize = 0;
-            };
-            ($($name:ident),* $(,)?) => {
-                as_item! {
-                    #[allow(non_camel_case_types)]
-                    #[derive(Debug)]
-                    #[repr(usize)]
-                    pub enum Tag { $($name),* }
-                }
-                const NUM_TAGS: usize = count! { $($name),* };
-            };
-        }
+                #[pyclass(from_py_object, eq, eq_int)]
+                #[allow(non_camel_case_types)]
+                #[derive(Debug, Clone, Copy, PartialEq)]
+                #[repr(usize)]
+                pub enum Tag {}
 
-        macro_rules! build_tag_impls {
-            ($($name:ident),* $(,)?) => {
+                const NUM_TAGS: usize = 0;
+
                 impl TryFrom<&str> for Tag {
                     type Error = String;
-
                     fn try_from(value: &str) -> Result<Self, Self::Error> {
                         match value {
-                            $(
-                                stringify!($name) => Ok(Tag::$name),
-                            )*
                             _ => Err(format!("unknown tag: {}", value)),
                         }
                     }
                 }
             };
-        }
+            ($($name:ident),* $(,)?) => {
+                #[pyclass(from_py_object, eq, eq_int)]
+                #[allow(non_camel_case_types)]
+                #[derive(Debug, Clone, Copy, PartialEq)]
+                #[repr(usize)]
+                pub enum Tag { $($name),* }
 
-        macro_rules! build_tags {
-            ($($body:tt)*) => {
-                build_enum! {
-                    $($body)*
-                }
-                build_tag_impls! {
-                    $($body)*
+                const NUM_TAGS: usize = count! { $($name),* };
+
+                impl TryFrom<&str> for Tag {
+                    type Error = String;
+                    fn try_from(value: &str) -> Result<Self, Self::Error> {
+                        match value {
+                            $( stringify!($name) => Ok(Tag::$name), )*
+                            _ => Err(format!("unknown tag: {}", value)),
+                        }
+                    }
                 }
             };
         }
@@ -130,7 +114,7 @@ fn emit_boilerplate() -> TokenStream {
             };
         }
 
-        #[derive(Debug)]
+        #[derive(Debug, Clone)]
         pub struct TagSet([u8; NUM_TAGS]);
 
         impl From<Vec<Tag>> for TagSet {
@@ -152,14 +136,6 @@ fn emit_boilerplate() -> TokenStream {
                 new
             }
 
-            pub fn union_of(sets: &Vec<TagSet>) -> TagSet {
-                let mut new = TagSet::new();
-                for set in sets {
-                    new.union(set);
-                }
-                new
-            }
-
             pub fn add(&mut self, tag: Tag) {
                 self.0[tag as usize] = 1;
             }
@@ -174,7 +150,7 @@ fn emit_boilerplate() -> TokenStream {
                 self.0[tag as usize] == 1
             }
 
-            pub fn contains_all<const N: usize>(&self, tags: [Tag;N]) -> bool {
+            pub fn contains_all<const N: usize>(&self, tags: [Tag; N]) -> bool {
                 let mut res = true;
                 for tag in tags {
                     res &= self.0[tag as usize] == 1;
@@ -182,7 +158,7 @@ fn emit_boilerplate() -> TokenStream {
                 res
             }
 
-            pub fn contains_any<const N: usize>(&self, tags: [Tag;N]) -> bool {
+            pub fn contains_any<const N: usize>(&self, tags: [Tag; N]) -> bool {
                 let mut res = false;
                 for tag in tags {
                     res |= self.0[tag as usize] == 1;
@@ -194,55 +170,56 @@ fn emit_boilerplate() -> TokenStream {
                 !self.contains(tag)
             }
 
-            pub fn lacks_all<const N: usize>(&self, tags: [Tag;N]) -> bool {
+            pub fn lacks_all<const N: usize>(&self, tags: [Tag; N]) -> bool {
                 !self.contains_any(tags)
             }
 
-            pub fn lacks_any<const N: usize>(&self, tags: [Tag;N]) -> bool {
+            pub fn lacks_any<const N: usize>(&self, tags: [Tag; N]) -> bool {
                 !self.contains_all(tags)
             }
         }
 
         trait Tagged {
             fn tags(&self) -> &TagSet;
+            fn tag(&mut self, tags: impl Into<TagSet>);
         }
 
         pub trait TagComparison {
             fn contains(&self, tag: Tag) -> bool;
-            fn contains_all<const N: usize>(&self, tags: [Tag;N]) -> bool;
-            fn contains_any<const N: usize>(&self, tags: [Tag;N]) -> bool;
+            fn contains_all<const N: usize>(&self, tags: [Tag; N]) -> bool;
+            fn contains_any<const N: usize>(&self, tags: [Tag; N]) -> bool;
             fn lacks(&self, tag: Tag) -> bool;
-            fn lacks_all<const N: usize>(&self, tags: [Tag;N]) -> bool;
-            fn lacks_any<const N: usize>(&self, tags: [Tag;N]) -> bool;
+            fn lacks_all<const N: usize>(&self, tags: [Tag; N]) -> bool;
+            fn lacks_any<const N: usize>(&self, tags: [Tag; N]) -> bool;
         }
 
         impl<T: Tagged> TagComparison for T {
-
             fn contains(&self, tag: Tag) -> bool {
                 self.tags().contains(tag)
             }
-            fn contains_all<const N: usize>(&self, tags: [Tag;N]) -> bool {
+            fn contains_all<const N: usize>(&self, tags: [Tag; N]) -> bool {
                 self.tags().contains_all(tags)
             }
-            fn contains_any<const N: usize>(&self, tags: [Tag;N]) -> bool {
+            fn contains_any<const N: usize>(&self, tags: [Tag; N]) -> bool {
                 self.tags().contains_any(tags)
             }
             fn lacks(&self, tag: Tag) -> bool {
                 self.tags().lacks(tag)
             }
-            fn lacks_all<const N: usize>(&self, tags: [Tag;N]) -> bool {
+            fn lacks_all<const N: usize>(&self, tags: [Tag; N]) -> bool {
                 self.tags().lacks_all(tags)
             }
-            fn lacks_any<const N: usize>(&self, tags: [Tag;N]) -> bool {
+            fn lacks_any<const N: usize>(&self, tags: [Tag; N]) -> bool {
                 self.tags().lacks_any(tags)
             }
         }
-
     }
 }
 
-pub fn emit_code(code: &Code) -> TokenStream {
+pub fn emit_code(code: &Code, module_name: &str) -> TokenStream {
     let boilerplate = emit_boilerplate();
+    let mod_name = emit_id(module_name);
+    let mod_name_str = module_name;
 
     let tags = emit_tags_enum(&code.tags);
     let tag_sets: Vec<TokenStream> = code
@@ -257,22 +234,54 @@ pub fn emit_code(code: &Code) -> TokenStream {
         .enumerate()
         .map(|(idx, r)| emit_regex_defn(idx, r))
         .collect();
-    let structs: Vec<TokenStream> = code.structs.iter().map(|s| emit_struct(s)).collect();
-    let functions: Vec<TokenStream> = code.action_rules.iter().map(|a| emit_function(a)).collect();
+    let structs: Vec<TokenStream> = code.structs.iter().map(emit_struct).collect();
+    let functions: Vec<TokenStream> = code.action_rules.iter().map(emit_function).collect();
+
+    let struct_names: Vec<TokenStream> = code
+        .structs
+        .iter()
+        .map(|Struct(StructName(name), _, _)| emit_id(name))
+        .collect();
+    let fn_names: Vec<TokenStream> = code
+        .action_rules
+        .iter()
+        .map(|ActionRules(ActionName(name), _, _, _, _, _, _)| emit_id(&format!("try_{name}")))
+        .collect();
 
     quote! {
         #boilerplate
         #tags
         #(#tag_sets)*
         #(#regexes)*
+
+        pyo3::create_exception!(#mod_name_str, PolicyDenied, pyo3::exceptions::PyException);
+        pyo3::create_exception!(#mod_name_str, PolicyWarned, pyo3::exceptions::PyException);
+
         #(#structs)*
         #(#functions)*
+
+        #[pymodule]
+        mod #mod_name {
+            #[pymodule_export]
+            use super::Tag;
+            #(
+                #[pymodule_export]
+                use super::#struct_names;
+            )*
+            #(
+                #[pymodule_export]
+                use super::#fn_names;
+            )*
+            #[pymodule_export]
+            use super::PolicyDenied;
+            #[pymodule_export]
+            use super::PolicyWarned;
+        }
     }
 }
 
 fn emit_tags_enum(tags: &Vec<Tag>) -> TokenStream {
     let tags: Vec<_> = tags.iter().map(|Tag(t)| emit_id(t)).collect();
-
     quote! {
         build_tags! {
             #(#tags),*
@@ -282,7 +291,6 @@ fn emit_tags_enum(tags: &Vec<Tag>) -> TokenStream {
 
 fn emit_tags(tags: &Vec<Tag>) -> TokenStream {
     let tags: Vec<_> = tags.iter().map(|Tag(t)| emit_tag(t)).collect();
-
     quote! {
         #(#tags),*
     }
@@ -310,89 +318,95 @@ fn emit_regex_defn(idx: usize, reg: &Regex) -> TokenStream {
     }
 }
 
-fn emit_type(typ: &Type, by_ref: bool) -> TokenStream {
-    let typ = match typ {
-        Type::Bool => emit_id("bool"),
-        Type::Int => emit_id("i32"),
-        Type::String => {
-            let id = emit_id("String");
-            if by_ref { 
-                quote! { &#id }
-            } else { 
-                id
-            }
-        },
-        Type::Struct(TitleId(s)) => {
-            let id = emit_id(s);
-            if by_ref { 
-                quote! { &#id }
-            } else { 
-                id
-            }
-        },
-    };
-
-    quote! { #typ }
-}
-
-fn emit_fields(fields: &Vec<Field>, by_ref: bool, types_only: bool, args_only: bool) -> TokenStream {
-    let fields: Vec<_> = fields
-        .iter()
-        .map(|Field(Id(name), typ)| {
-            let name = emit_id(name);
-            let typ = emit_type(typ, by_ref);
-            if types_only && !args_only{
-                quote! { #typ }
-            } else if !types_only && args_only{
-                quote! { #name }
-            } else if !types_only && !args_only {
-                quote! { #name: #typ }
-            } else {
-                panic!("cannot have types_only and args_only");
-            }
-        })
-        .collect();
-
-    quote! {
-        #(#fields),*
+// Emit the Rust type used in pyclass struct fields and #[new] constructor params.
+// pyo3 requires owned types for #[pyclass] fields: String not &str, i32 not &i32.
+fn emit_py_type(typ: &Type) -> TokenStream {
+    match typ {
+        Type::Bool => quote! { bool },
+        Type::Int => quote! { i32 },
+        Type::String => quote! { String },
+        Type::Struct(TitleId(s)) => emit_id(s),
     }
 }
 
 fn emit_struct(s: &Struct) -> TokenStream {
-    let Struct(StructName(name), TagList(tags), FieldList(fields)) = s;
+    let Struct(StructName(name), TagList(preset_tags), FieldList(fields)) = s;
     let name = emit_id(name);
-    let tags = emit_tags(tags);
-    let field_names: Vec<_> = fields
+
+    // Struct field declarations with pyo3 getters/setters (owned types)
+    let field_decls: Vec<TokenStream> = fields
         .iter()
-        .map(|Field(Id(name), _)| emit_id(name))
+        .map(|Field(Id(n), typ)| {
+            let n = emit_id(n);
+            let t = emit_py_type(typ);
+            quote! {
+                #[pyo3(get, set)]
+                pub #n: #t,
+            }
+        })
         .collect();
-    let fields = emit_fields(fields, false, false, false);
+
+    // Constructor params (same owned types, no TagSet)
+    let ctor_params: Vec<TokenStream> = fields
+        .iter()
+        .map(|Field(Id(n), typ)| {
+            let n = emit_id(n);
+            let t = emit_py_type(typ);
+            quote! { #n: #t }
+        })
+        .collect();
+
+    // Field names for Self { .. } initializer
+    let field_names: Vec<TokenStream> = fields
+        .iter()
+        .map(|Field(Id(n), _)| emit_id(n))
+        .collect();
+
+    // Preset tags baked into this struct type from the DSL
+    let preset_tag_vals: Vec<TokenStream> = preset_tags
+        .iter()
+        .map(|Tag(t)| emit_tag(t))
+        .collect();
+
+    // pyo3 signature string: (field1, field2, ..., tags=None)
+    // Build as a literal for #[pyo3(signature = (...))]
+    let sig_fields: Vec<TokenStream> = fields
+        .iter()
+        .map(|Field(Id(n), _)| emit_id(n))
+        .collect();
 
     quote! {
-        #[derive(Debug)]
+        #[pyclass(from_py_object)]
+        #[derive(Debug, Clone)]
         pub struct #name {
-            #fields,
-            tags: TagSet,
+            #(#field_decls)*
+            pub _tags: TagSet,
         }
+
+        #[pymethods]
         impl #name {
-            pub fn new(#fields, tags: Option<TagSet>) -> Self {
-                let mut preset = TagSet::new_with(vec![#tags]);
-                if let Some(tags) = tags {
-                    preset.union(&tags)
-                };
+            #[new]
+            #[pyo3(signature = (#(#sig_fields),*, tags = None))]
+            pub fn new(#(#ctor_params),*, tags: Option<Vec<Tag>>) -> Self {
+                let mut tag_set = TagSet::new_with(vec![#(#preset_tag_vals),*]);
+                if let Some(user_tags) = tags {
+                    for t in user_tags {
+                        tag_set.add(t);
+                    }
+                }
                 Self {
                     #(#field_names),*,
-                    tags: preset
+                    _tags: tag_set,
                 }
             }
-
-            pub fn tag(&mut self, tags: impl Into<TagSet>) {
-                self.tags.union(&tags.into());
-            }
         }
+
         impl Tagged for #name {
             fn tags(&self) -> &TagSet {
-                &self.tags
+                &self._tags
+            }
+            fn tag(&mut self, tags: impl Into<TagSet>) {
+                self._tags.union(&tags.into());
             }
         }
     }
@@ -410,12 +424,31 @@ fn emit_function(action: &ActionRules) -> TokenStream {
     ) = action;
 
     let try_name = emit_id(&format!("try_{name}"));
-    let ret_type = emit_type(ret, false);
-    let ref_fields = emit_fields(fields, true, false, false);
-    let fields_sig = emit_fields(fields, true, true, false);
-    let args = emit_fields(fields, true, false, true);
-    let fallback = emit_fallback(fallback);
-    let deny_checks: Vec<_> = deny_conds
+    let ret_type = emit_py_type(ret);
+    let fallback_ts = emit_fallback(fallback);
+
+    // Positional extraction from the PyTuple args: let foo: FooType = args.get_item(N)?.extract()?;
+    let arg_extractions: Vec<TokenStream> = fields
+        .iter()
+        .enumerate()
+        .map(|(i, Field(Id(n), typ))| {
+            let n = emit_id(n);
+            let t = emit_py_type(typ);
+            quote! { let #n: #t = args.get_item(#i)?.extract()?; }
+        })
+        .collect();
+
+    // Shadow owned names with refs inside the condition block only,
+    // leaving owned bindings available outside for the body call.
+    let ref_shadows: Vec<TokenStream> = fields
+        .iter()
+        .map(|Field(Id(n), _)| {
+            let n = emit_id(n);
+            quote! { let #n = &#n; }
+        })
+        .collect();
+
+    let deny_checks: Vec<TokenStream> = deny_conds
         .iter()
         .map(|lc| {
             let cond = emit_condition(&lc.condition);
@@ -427,10 +460,11 @@ fn emit_function(action: &ActionRules) -> TokenStream {
             }
         })
         .collect();
-    let allow_checks: Vec<_> = allow_conds
+
+    let allow_checks: Vec<TokenStream> = allow_conds
         .iter()
         .map(|c| {
-            let cond = emit_condition(&c);
+            let cond = emit_condition(c);
             quote! {
                 if #cond {
                     break 'can PolicyDecision::Allow;
@@ -438,38 +472,63 @@ fn emit_function(action: &ActionRules) -> TokenStream {
             }
         })
         .collect();
-    let applications: Vec<_> = applications
+
+    let applications_ts: Vec<TokenStream> = applications
         .iter()
         .map(|(TagList(tags), cond)| {
-            let tags = emit_tags(tags);
-            let cond = emit_condition(cond);
+            let tags_ts = emit_tags(tags);
+            let cond_ts = emit_condition(cond);
             quote! {
-                if #cond {
-                    to_add.append(&mut vec![#tags]);
+                if #cond_ts {
+                    to_add.append(&mut vec![#tags_ts]);
                 }
             }
         })
         .collect();
 
-    quote! {
-        pub fn #try_name(#ref_fields, body: impl Fn(#fields_sig) -> #ret_type) -> PolicyResult<#ret_type> {
-            let pd = 'can: {
-                #(#deny_checks)*
-                #(#allow_checks)*
-                break 'can #fallback;
-            };
+    // Args passed into the Python body callable: owned values (moved out after checks)
+    let call_args: Vec<TokenStream> = fields
+        .iter()
+        .map(|Field(Id(n), _)| emit_id(n))
+        .collect();
 
-            match pd {
-                PolicyDecision::Deny(s) => PolicyResult::Deny(s.to_owned()),
-                PolicyDecision::Warn => PolicyResult::Warn,
-                PolicyDecision::Allow => {
-                    let mut res = body(#args);
-                    let mut to_add: Vec<Tag> = Vec::new();
-                    #(#applications)*
-                    res.tag(to_add);
-                    PolicyResult::Allow(res)
-                },
-            } 
+    quote! {
+        #[pyfunction]
+        pub fn #try_name(py: Python<'_>, func: Py<PyAny>) -> Py<PyAny> {
+            let wrapper = move |args: &Bound<'_, PyTuple>, _kwargs: Option<&Bound<'_, PyDict>>| -> PyResult<Py<PyAny>> {
+                // Extract owned values from the Python args tuple
+                #(#arg_extractions)*
+
+                // Evaluate deny/allow conditions using references (owned values stay alive)
+                let pd = {
+                    #(#ref_shadows)*
+                    'can: {
+                        #(#deny_checks)*
+                        #(#allow_checks)*
+                        break 'can #fallback_ts;
+                    }
+                };
+
+                let py = args.py();
+                match pd {
+                    PolicyDecision::Deny(s) => Err(PyErr::new::<PolicyDenied, _>(s)),
+                    PolicyDecision::Warn => Err(PyErr::new::<PolicyWarned, _>("")),
+                    PolicyDecision::Allow => {
+                        // Pass owned values into the Python body callable
+                        let mut res: #ret_type = func.bind(py).call1((#(#call_args),*,))?.extract()?;
+                        let mut to_add: Vec<Tag> = Vec::new();
+                        #(#applications_ts)*
+                        res.tag(to_add);
+                        Ok(res.into_pyobject(py)?.into_any().unbind())
+                    }
+                }
+            };
+            PyCFunction::new_closure(py, None, None, wrapper)
+                .unwrap()
+                .into_pyobject(py)
+                .unwrap()
+                .into_any()
+                .unbind()
         }
     }
 }
@@ -500,49 +559,42 @@ fn emit_bool_expr(expr: &BoolExpr) -> TokenStream {
         }
         BoolExpr::Rule(ir::Id(id), ExprList(exprs)) => {
             let func = emit_id(&format!("can_{id}"));
-            let exprs: Vec<_> = exprs.iter().map(|e| emit_expr(e)).collect();
+            let exprs: Vec<_> = exprs.iter().map(emit_expr).collect();
             quote! { matches!(#func(#(#exprs),*), PolicyDecision::Allow) }
         }
         BoolExpr::Gt(a, b) => {
             let a = emit_math_expr(a);
             let b = emit_math_expr(b);
-
             quote! { (#a > #b) }
         }
         BoolExpr::Lt(a, b) => {
             let a = emit_math_expr(a);
             let b = emit_math_expr(b);
-
             quote! { (#a < #b) }
         }
         BoolExpr::Gte(a, b) => {
             let a = emit_math_expr(a);
             let b = emit_math_expr(b);
-
             quote! { (#a >= #b) }
         }
         BoolExpr::Lte(a, b) => {
             let a = emit_math_expr(a);
             let b = emit_math_expr(b);
-
             quote! { (#a <= #b) }
         }
         BoolExpr::Eq(a, b) => {
             let a = emit_expr(a);
             let b = emit_expr(b);
-
             quote! { (#a == #b) }
         }
         BoolExpr::Neq(a, b) => {
             let a = emit_expr(a);
             let b = emit_expr(b);
-
             quote! { (#a != #b) }
         }
         BoolExpr::Match(s, r) => {
             let s = emit_string_expr(s);
             let r = emit_regex(r);
-
             quote! { #r.is_match(#s) }
         }
         BoolExpr::Contains(a, Tag(b)) => {
@@ -597,7 +649,6 @@ fn emit_tag_bool(expr: &TagExpr, op: TagBoolOp, arg: TokenStream) -> TokenStream
                     quote! { #i.#func(#arg) }
                 })
                 .collect();
-
             quote! { (#(#v)||*) }
         }
         TagExpr::Every(v) => {
@@ -608,7 +659,6 @@ fn emit_tag_bool(expr: &TagExpr, op: TagBoolOp, arg: TokenStream) -> TokenStream
                     quote! { #i.#func(#arg) }
                 })
                 .collect();
-
             quote! { (#(#v)&&*) }
         }
     }
