@@ -31,7 +31,7 @@ fn emit_regex(i: &RegexId) -> TokenStream {
 
 fn emit_fallback(fallback: &Fallback) -> TokenStream {
     match fallback {
-        Fallback::Allow => quote! { PolicyDecision::Allow("fallback") },
+        Fallback::Allow => quote! { PolicyDecision::Allow },
         Fallback::Deny => quote! { PolicyDecision::Deny("fallback") },
         Fallback::Warn => quote! { PolicyDecision::Warn },
     }
@@ -46,9 +46,16 @@ fn emit_boilerplate() -> TokenStream {
         const STATIC_REGEX_COMPILE_ERROR: &'static str = "Valid regex from transpilation";
 
         #[derive(Debug)]
-        pub enum PolicyDecision {
-            Allow(&'static str),
+        enum PolicyDecision {
+            Allow,
             Deny(&'static str),
+            Warn,
+        }
+
+        #[derive(Debug)]
+        pub enum PolicyResult<T> {
+            Allow(T),
+            Deny(String),
             Warn,
         }
 
@@ -303,24 +310,46 @@ fn emit_regex_defn(idx: usize, reg: &Regex) -> TokenStream {
     }
 }
 
-fn emit_type(typ: &Type) -> TokenStream {
-    let typ = emit_id(match typ {
-        Type::Bool => "bool",
-        Type::Int => "i32",
-        Type::String => "String",
-        Type::Struct(TitleId(s)) => s,
-    });
+fn emit_type(typ: &Type, by_ref: bool) -> TokenStream {
+    let typ = match typ {
+        Type::Bool => emit_id("bool"),
+        Type::Int => emit_id("i32"),
+        Type::String => {
+            let id = emit_id("String");
+            if by_ref { 
+                quote! { &#id }
+            } else { 
+                id
+            }
+        },
+        Type::Struct(TitleId(s)) => {
+            let id = emit_id(s);
+            if by_ref { 
+                quote! { &#id }
+            } else { 
+                id
+            }
+        },
+    };
 
     quote! { #typ }
 }
 
-fn emit_fields(fields: &Vec<Field>) -> TokenStream {
+fn emit_fields(fields: &Vec<Field>, by_ref: bool, types_only: bool, args_only: bool) -> TokenStream {
     let fields: Vec<_> = fields
         .iter()
         .map(|Field(Id(name), typ)| {
             let name = emit_id(name);
-            let typ = emit_type(typ);
-            quote! { #name: #typ }
+            let typ = emit_type(typ, by_ref);
+            if types_only && !args_only{
+                quote! { #typ }
+            } else if !types_only && args_only{
+                quote! { #name }
+            } else if !types_only && !args_only {
+                quote! { #name: #typ }
+            } else {
+                panic!("cannot have types_only and args_only");
+            }
         })
         .collect();
 
@@ -337,7 +366,7 @@ fn emit_struct(s: &Struct) -> TokenStream {
         .iter()
         .map(|Field(Id(name), _)| emit_id(name))
         .collect();
-    let fields = emit_fields(fields);
+    let fields = emit_fields(fields, false, false, false);
 
     quote! {
         #[derive(Debug)]
@@ -373,16 +402,18 @@ fn emit_function(action: &ActionRules) -> TokenStream {
     let ActionRules(
         ActionName(name),
         FieldList(fields),
-        _ret,
+        ret,
         fallback,
         allow_conds,
         deny_conds,
         Applications(applications),
     ) = action;
 
-    let can_name = emit_id(&format!("can_{name}"));
-    let after_name = emit_id(&format!("after_{name}"));
-    let fields = emit_fields(fields);
+    let try_name = emit_id(&format!("try_{name}"));
+    let ret_type = emit_type(ret, false);
+    let ref_fields = emit_fields(fields, true, false, false);
+    let fields_sig = emit_fields(fields, true, true, false);
+    let args = emit_fields(fields, true, false, true);
     let fallback = emit_fallback(fallback);
     let deny_checks: Vec<_> = deny_conds
         .iter()
@@ -391,19 +422,18 @@ fn emit_function(action: &ActionRules) -> TokenStream {
             let label = &lc.label;
             quote! {
                 if #cond {
-                    return PolicyDecision::Deny(#label);
+                    break 'can PolicyDecision::Deny(#label);
                 }
             }
         })
         .collect();
     let allow_checks: Vec<_> = allow_conds
         .iter()
-        .map(|lc| {
-            let cond = emit_condition(&lc.condition);
-            let label = &lc.label;
+        .map(|c| {
+            let cond = emit_condition(&c);
             quote! {
                 if #cond {
-                    return PolicyDecision::Allow(#label);
+                    break 'can PolicyDecision::Allow;
                 }
             }
         })
@@ -422,15 +452,24 @@ fn emit_function(action: &ActionRules) -> TokenStream {
         .collect();
 
     quote! {
-        pub fn #can_name(#fields) -> PolicyDecision {
-            #(#deny_checks)*
-            #(#allow_checks)*
-            #fallback
-        }
-        pub fn #after_name() -> Vec<Tag> {
-            let mut to_add: Vec<Tag> = Vec::new();
-            #(#applications)*
-            to_add
+        pub fn #try_name(#ref_fields, body: impl Fn(#fields_sig) -> #ret_type) -> PolicyResult<#ret_type> {
+            let pd = 'can: {
+                #(#deny_checks)*
+                #(#allow_checks)*
+                break 'can #fallback;
+            };
+
+            match pd {
+                PolicyDecision::Deny(s) => PolicyResult::Deny(s.to_owned()),
+                PolicyDecision::Warn => PolicyResult::Warn,
+                PolicyDecision::Allow => {
+                    let mut res = body(#args);
+                    let mut to_add: Vec<Tag> = Vec::new();
+                    #(#applications)*
+                    res.tag(to_add);
+                    PolicyResult::Allow(res)
+                },
+            } 
         }
     }
 }

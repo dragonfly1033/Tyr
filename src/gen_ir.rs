@@ -84,7 +84,7 @@ fn compile_actions(
             FieldList,
             Type,
             Fallback,
-            Vec<ir::LabelledCondition>,
+            Vec<ir::Condition>,
             Vec<ir::LabelledCondition>,
             ir::Applications,
         ),
@@ -144,13 +144,13 @@ fn compile_rules(
     args: &Vec<ir::Id>,
     ctx: &GenerationContext,
 ) -> (
-    Vec<ir::LabelledCondition>,
+    Vec<ir::Condition>,
     Vec<ir::LabelledCondition>,
     ir::Applications,
     Vec<ir::Regex>,
     Vec<Vec<ir::Tag>>,
 ) {
-    let mut allows: Vec<ir::LabelledCondition> = Vec::new();
+    let mut allows: Vec<ir::Condition> = Vec::new();
     let mut denys: Vec<ir::LabelledCondition> = Vec::new();
     let mut applications: Vec<(ir::TagList, ir::Condition)> = Vec::new();
 
@@ -160,10 +160,7 @@ fn compile_rules(
     for rule in rules {
         match rule {
             ast::Rule::Allow(c) => {
-                allows.push(ir::LabelledCondition {
-                    label: c.to_string(),
-                    condition: compile_condition(c, &mut regexes, &mut tag_sets, args, ctx),
-                });
+                allows.push(compile_condition(c, &mut regexes, &mut tag_sets, args, ctx));
             }
             ast::Rule::Deny(c) => {
                 denys.push(ir::LabelledCondition {

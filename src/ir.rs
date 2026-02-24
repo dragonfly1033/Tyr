@@ -46,7 +46,7 @@ pub struct ActionRules(
     pub FieldList,
     pub Type,
     pub Fallback,
-    pub Vec<LabelledCondition>,
+    pub Vec<Condition>,
     pub Vec<LabelledCondition>,
     pub Applications,
 );
